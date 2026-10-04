@@ -1,7 +1,7 @@
 # terust（Rust ターミナルアプリ）
 
 EVECLOUD とは独立した単独プロジェクト。EVECLOUD の規約・Backlog `THEMIS_GO`・evecloud-* のスキルやエージェントは適用しない。
-リモート: GitHub（リポジトリは未作成。課題は GitHub Issues、PR は `gh`）。応答・ドキュメントは日本語。仕様の細部は未確定（末尾の「未確定事項」）。決まったらこのファイルを更新する。
+リモート: GitHub `dds-nakamura/runs`（private。課題は GitHub Issues、PR は `gh`）。応答・ドキュメントは日本語。仕様の細部は未確定（末尾の「未確定事項」）。決まったらこのファイルを更新する。
 
 ## Commands
 
@@ -58,5 +58,5 @@ clippy 警告を `#[allow(...)]` で黙らせる場合は理由コメント必�
 - [ ] 対象 OS・端末（Windows / Linux / macOS、Windows Terminal / conhost）
 - [ ] TUI ライブラリ（候補: ratatui + crossterm）→ `/tui-test` を具体化
 - [ ] エラー処理クレート（候補: anyhow / thiserror）→ `rust-safety` 1章を更新
-- [x] 課題管理とリモート → GitHub（リポジトリ未作成。作成後に `git remote add origin` と `gh auth login`）
+- [x] 課題管理とリモート → GitHub `dds-nakamura/runs`（private）
 - [ ] edition・MSRV、配布方法（cargo install / バイナリ配布）
