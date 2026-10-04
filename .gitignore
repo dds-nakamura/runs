@@ -1,0 +1,6 @@
+/target
+
+# Claude Code: 個人設定・実行時状態はコミットしない（共有するのは settings.json / hooks / agents / skills / scripts）
+/.claude/settings.local.json
+/.claude/state/
+*.local.md
