@@ -11,13 +11,19 @@ description: runs の安全性・堅牢性の方針（エラー処理と panic�
 
 - 非テストコードで `unwrap()` / `expect()` / `panic!` / `unreachable!` / 範囲外になりうる添字 `v[i]` を使わない。
   `?` で伝播し、呼び出し側で利用者向けメッセージにする。不変条件で本当に起きない場合のみ `expect("<なぜ起きないか>")` 可
-- エラー型の方針（候補: アプリ層は `anyhow`、ライブラリ層は `thiserror`）は未確定。採用後にここを更新する
+- エラー型は `anyhow`（`anyhow::Result`）。`?` で伝播するときは `.context("<何をしていて失敗したか>")` を付ける。
+  エラーの種類で呼び出し側が分岐する必要が出たら、`thiserror` の追加を spec で合意する（それまで独自のエラー型は作らない）
+- 利用者向けのエラーメッセージは、端末を復元した後に stderr へ出し、非ゼロの終了コードで終わる
 - エラーを握りつぶさない（`let _ = ...` / `.ok()` で捨てる場合は理由コメント）
 
 ## 2. 端末状態の復元（TUI 固有・最重要）
 
 raw mode・alternate screen・カーソル非表示・マウスキャプチャを有効にしたまま終了すると、利用者のシェルが壊れる。
 
+- 土台は `ratatui::try_init()`（panic hook の設定・raw mode・alternate screen）と `ratatui::try_restore()`。
+  `ratatui::init()` は初期化に失敗すると panic するので使わない
+- ratatui の panic hook と `try_restore()` が戻すのは raw mode と alternate screen だけ。
+  マウスキャプチャなどを追加で有効にしたら、その復元はガードと panic hook の両方に自分で入れる
 - 有効化と復元を RAII ガード（`Drop` で復元）にまとめ、早期 return・`?` でも必ず復元されるようにする
 - panic hook を設定し、**panic メッセージを出す前に**端末を復元する（復元しないとメッセージが alternate screen に消える）
 - Ctrl+C は raw mode ではシグナルにならずキー入力として届く。終了キーとして明示的に扱う
@@ -40,7 +46,7 @@ raw mode・alternate screen・カーソル非表示・マウスキャプチャ�
 
 ## 5. unsafe
 
-- 原則禁止。クレートルートに `#![forbid(unsafe_code)]` を置く（cargo init 時に入れる）
+- 原則禁止。クレートルートに `#![forbid(unsafe_code)]` を置く（`src/main.rs` に設定済み。外さない）
 - 必要な場合は spec で合意し、`// SAFETY:` コメントで前提を書き、最小のモジュールに閉じ込める
 
 ## 6. 外部コマンド・ファイル
@@ -57,6 +63,8 @@ raw mode・alternate screen・カーソル非表示・マウスキャプチャ�
 ## 8. 依存クレート
 
 - 追加は spec の「依存クレート」表で合意してから（用途・ライセンス・代替案）。`cargo add` は確認が入る
-- feature は必要なものだけ有効にする（`default-features = false` を検討）
+- feature は必要なものだけ有効にする（`default-features = false` を検討）。
+  `ratatui` は `default-features = false` で入れている。`macros`・`widget-calendar` などが必要になったら feature を足す
+- crossterm は直接依存に追加しない。`ratatui::crossterm` を使う（ratatui が使う版とずれると型が合わなくなる）
 - `cargo update` で無関係な依存まで上げない（`cargo update -p <crate>`）
 - 依存の脆弱性・ライセンスは `bash .claude/scripts/verify.sh --all`（cargo-deny 導入時）で確認する
