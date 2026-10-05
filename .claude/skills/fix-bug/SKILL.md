@@ -16,7 +16,8 @@ argument-hint: <issue番号 | 不具合の説明>
    （Rust の慣習どおり同じファイルの `mod tests` に書くと、ロックで実装も直せなくなる）
    - 内部ロジック: `src/foo.rs` に `#[cfg(test)] mod tests;` を置き、`src/foo/tests.rs` に書く
      （`src/foo/mod.rs` 形式なら `src/foo/tests.rs`）
-   - 公開 API・CLI の挙動: `tests/<機能>.rs`（結合テスト）
+   - CLI の挙動: `tests/<機能>.rs`（結合テスト。`runs` はバイナリクレートのみで lib が無いので、
+     `tests/` から内部の関数は呼べない。`env!("CARGO_BIN_EXE_runs")` でバイナリを実行する）
    - 描画の不具合: `/tui-test` の描画テスト
 3. **失敗を確認**: `cargo test <テスト名>` を実行し、**不具合そのものが原因で**失敗していることを確認する
    （コンパイルエラーや環境要因の失敗は不可）。出力を示す

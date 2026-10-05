@@ -32,9 +32,13 @@ clippy 警告を `#[allow(...)]` で黙らせる場合は理由コメント必�
 
 ## Architecture（暫定）
 
-- クレート名・バイナリ名は `runs`（`cargo init --name runs`）。構成は cargo init 後に記入する
+- クレート名・バイナリ名は `runs`。単一のバイナリクレート（edition 2024、MSRV 1.88、`publish = false`）。
+  現状は `src/main.rs` のみ（`#![forbid(unsafe_code)]`）。モジュール構成は最初の機能の spec で決めて記入する
+- 依存: `ratatui` 0.30（`default-features = false`、feature は `crossterm` / `layout-cache` / `underline-color`）、`anyhow` 1。
+  crossterm（0.29）は直接依存にせず `ratatui::crossterm` を使う（ratatui とバージョンがずれるのを避ける。例外は `rust-safety` 8章）
 - 方針: 状態（モデル）・更新（入力→状態）・描画を分け、状態と更新は端末なしでテストできるようにする
-- 端末の初期化・復元は 1 か所（RAII ガード + panic hook）に閉じ込める（`rust-safety` 2章）
+- 端末の初期化・復元は 1 か所（RAII ガード + panic hook）に閉じ込める。土台は `ratatui::try_init()` / `ratatui::try_restore()`。
+  `try_init()` は途中で失敗しても元に戻さないので、`Err` のときも復元する（`rust-safety` 2章）
 
 ## Conventions
 
@@ -55,8 +59,10 @@ clippy 警告を `#[allow(...)]` で黙らせる場合は理由コメント必�
 
 ## 未確定事項（決まったら更新する）
 
-- [ ] 対象 OS・端末（Windows / Linux / macOS、Windows Terminal / conhost）
-- [ ] TUI ライブラリ（候補: ratatui + crossterm）→ `/tui-test` を具体化
-- [ ] エラー処理クレート（候補: anyhow / thiserror）→ `rust-safety` 1章を更新
+- [x] 対象 OS・端末 → Windows 11（Windows Terminal）/ Linux / macOS の 3 OS すべてを一次対象とする。conhost は一次対象に含めない
+- [ ] Linux / macOS の確認手段（実機確認は Linux = WSL の Ubuntu が候補、macOS = 未定。CI の 3 OS マトリクスは未導入）
+- [x] TUI ライブラリ → ratatui 0.30 + crossterm 0.29（`ratatui::crossterm` 経由）
+- [x] エラー処理クレート → `anyhow` のみで開始。エラーの種類で分岐する必要が出たら `thiserror` の追加を spec で合意する
 - [x] 課題管理とリモート → GitHub `dds-nakamura/runs`（private）
-- [ ] edition・MSRV、配布方法（cargo install / バイナリ配布）
+- [x] edition・MSRV → edition 2024 / MSRV 1.88（`rust-version`。1.88 のツールチェーンでの実ビルドは未検証）
+- [ ] 配布方法（cargo install / バイナリ配布。最初のリリース前に決める）

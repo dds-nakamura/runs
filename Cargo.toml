@@ -1,0 +1,10 @@
+[package]
+name = "runs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+[dependencies]
+anyhow = "1"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm", "layout-cache", "underline-color"] }
