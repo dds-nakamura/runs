@@ -27,6 +27,7 @@ argument-hint: <対象画面・キー操作・機能>
 - キーは `KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)` で作る（`kind` は Press になる）
 - Windows では Press と Release が両方届く。更新関数は `KeyEventKind::Press` 以外を無視し、
   `KeyEvent::new_with_kind(.., KeyEventKind::Release)` を渡しても状態が変わらないケースを 1 つ書く
+  （キーボード拡張の `REPORT_EVENT_TYPES` を有効にすると長押しが `Repeat` で届く。有効にするときは Repeat の扱いを見直す）
 - Ctrl+C（`KeyCode::Char('c')` + `KeyModifiers::CONTROL`）で終了状態になること
 
 層 2 の補足: `TestBackend` は `Display` を実装している。`insta` 導入後は `assert_snapshot!(terminal.backend())` に置き換える。

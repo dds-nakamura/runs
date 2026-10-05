@@ -35,9 +35,10 @@ clippy 警告を `#[allow(...)]` で黙らせる場合は理由コメント必�
 - クレート名・バイナリ名は `runs`。単一のバイナリクレート（edition 2024、MSRV 1.88、`publish = false`）。
   現状は `src/main.rs` のみ（`#![forbid(unsafe_code)]`）。モジュール構成は最初の機能の spec で決めて記入する
 - 依存: `ratatui` 0.30（`default-features = false`、feature は `crossterm` / `layout-cache` / `underline-color`）、`anyhow` 1。
-  crossterm（0.29）は直接依存にせず `ratatui::crossterm` を使う（ratatui とバージョンがずれるのを避ける）
+  crossterm（0.29）は直接依存にせず `ratatui::crossterm` を使う（ratatui とバージョンがずれるのを避ける。例外は `rust-safety` 8章）
 - 方針: 状態（モデル）・更新（入力→状態）・描画を分け、状態と更新は端末なしでテストできるようにする
-- 端末の初期化・復元は 1 か所（RAII ガード + panic hook）に閉じ込める。土台は `ratatui::try_init()` / `ratatui::try_restore()`（`rust-safety` 2章）
+- 端末の初期化・復元は 1 か所（RAII ガード + panic hook）に閉じ込める。土台は `ratatui::try_init()` / `ratatui::try_restore()`。
+  `try_init()` は途中で失敗しても元に戻さないので、`Err` のときも復元する（`rust-safety` 2章）
 
 ## Conventions
 
