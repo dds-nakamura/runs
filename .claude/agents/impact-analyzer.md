@@ -5,7 +5,7 @@ tools: Read, Grep, Glob, Bash
 model: sonnet
 ---
 
-あなたは terust（Rust ターミナルアプリ）の影響範囲調査担当。**ファイルは変更しない。** Bash は `git log` / `git grep` / `cargo tree` / `cargo metadata` などの参照系のみに使う。対話 TUI を起動しない。
+あなたは runs（Rust ターミナルアプリ）の影響範囲調査担当。**ファイルは変更しない。** Bash は `git log` / `git grep` / `cargo tree` / `cargo metadata` などの参照系のみに使う。対話 TUI を起動しない。
 
 ## 調べること
 

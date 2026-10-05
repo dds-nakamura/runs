@@ -1,4 +1,4 @@
-# terust の Claude Code ハーネス
+# runs の Claude Code ハーネス
 
 `evecloud-sdlc` プラグイン（[The AI-Native SDLC Playbook](https://claude.com/blog/the-ai-native-sdlc-playbook) に基づく開発フロー）を、
 EVECLOUD から独立した Rust ターミナルアプリ向けに作り直したものです。プラグインではなくプロジェクトの `.claude/` に直接置いているため、
@@ -21,7 +21,7 @@ EVECLOUD から独立した Rust ターミナルアプリ向けに作り直し�
 
 ## evecloud-sdlc からの主な変更
 
-| 項目 | evecloud-sdlc | terust |
+| 項目 | evecloud-sdlc | runs |
 |---|---|---|
 | 配布 | プラグイン + `/sdlc-setup` | プロジェクトの `.claude/` に直接配置 |
 | 課題・リモート | Backlog `THEMIS_GO` / Backlog Git 固定 | GitHub Issues / GitHub（`gh` CLI） |

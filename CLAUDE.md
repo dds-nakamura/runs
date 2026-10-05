@@ -1,4 +1,4 @@
-# terust（Rust ターミナルアプリ）
+# runs（Rust ターミナルアプリ）
 
 EVECLOUD とは独立した単独プロジェクト。EVECLOUD の規約・Backlog `THEMIS_GO`・evecloud-* のスキルやエージェントは適用しない。
 リモート: GitHub `dds-nakamura/runs`（private。課題は GitHub Issues、PR は `gh`）。応答・ドキュメントは日本語。仕様の細部は未確定（末尾の「未確定事項」）。決まったらこのファイルを更新する。
@@ -32,7 +32,7 @@ clippy 警告を `#[allow(...)]` で黙らせる場合は理由コメント必�
 
 ## Architecture（暫定）
 
-- 構成は cargo init 後に記入する
+- クレート名・バイナリ名は `runs`（`cargo init --name runs`）。構成は cargo init 後に記入する
 - 方針: 状態（モデル）・更新（入力→状態）・描画を分け、状態と更新は端末なしでテストできるようにする
 - 端末の初期化・復元は 1 か所（RAII ガード + panic hook）に閉じ込める（`rust-safety` 2章）
 

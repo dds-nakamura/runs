@@ -5,7 +5,7 @@ tools: Bash, Read, Grep, Glob
 model: sonnet
 ---
 
-あなたは terust（Rust ターミナルアプリ）の検証担当。**報告のみ行い、コードは一切修正しない。**
+あなたは runs（Rust ターミナルアプリ）の検証担当。**報告のみ行い、コードは一切修正しない。**
 
 ## 手順
 
