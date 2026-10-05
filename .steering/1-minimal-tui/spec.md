@@ -84,8 +84,8 @@ impl App {
 pub fn draw(frame: &mut Frame, app: &App);
 
 // src/tui.rs
-pub struct TerminalGuard { terminal: DefaultTerminal }
-impl TerminalGuard { pub fn new() -> anyhow::Result<Self>; }
+struct TerminalGuard { terminal: DefaultTerminal }   // tui::run だけが使うので非公開
+impl TerminalGuard { fn new() -> anyhow::Result<Self>; }
 impl Drop for TerminalGuard { /* try_restore。失敗しても panic しない */ }
 pub fn run(app: &mut App) -> anyhow::Result<()>;
 ```
@@ -114,7 +114,9 @@ pub fn run(app: &mut App) -> anyhow::Result<()>;
   復元側のエラーは捨てる（元のエラーを優先して返すため。理由をコメントに書く）
 - 復元は `Drop` で `ratatui::try_restore()` を呼ぶ。失敗したら `writeln!(io::stderr(), ..)` で伝え、その書き込みの失敗は無視する。
   `ratatui::restore()` と `eprintln!` は使わない（stderr への書き込みに失敗すると panic するため）
-- カーソルは非表示にしない。マウスキャプチャも有効にしない。追加の復元処理は要らない
+- カーソルは `Terminal::draw` が描画のたびに隠す（カーソル位置を指定しない場合の ratatui の挙動）。
+  戻すのは `Terminal` の drop で、ガードが `Terminal` を持つので、ガードの drop（alternate screen を出た後）で戻る
+- マウスキャプチャは有効にしない。追加の復元処理は要らない
 - `main` はガードが drop された後でエラーメッセージを出す。順序を保証するため、`tui::run` の戻り値を `main` で受けてから表示する
 
 `main`:
