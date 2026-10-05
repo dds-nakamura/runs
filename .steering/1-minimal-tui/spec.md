@@ -8,7 +8,7 @@
 
 - [ ] 端末上で引数なしで起動すると、alternate screen にプレースホルダー画面が出る
 - [ ] `q`（修飾キーなし）を押すと終了し、終了コードは 0
-- [ ] Ctrl+C を押すと終了し、終了コードは 0
+- [ ] Ctrl+C を押すと終了し、終了コードは 0（Caps Lock や Shift で文字が `C` になっていても終了する）
 - [ ] 上記以外のキー（Esc、`Q`、Alt+q など）では状態も画面も変わらない
 - [ ] キーの Release・Repeat イベントでは状態が変わらない（Windows で `q` を離したときに二重に処理しない）
 - [ ] リサイズすると、新しいサイズで画面が描き直される
@@ -70,12 +70,14 @@ pub fn version_text() -> String;   // "runs 0.1.0"
 pub fn help_text() -> String;
 
 // src/app.rs
-pub struct App { should_quit: bool }          // Default で should_quit = false
+pub struct App { title: String, should_quit: bool }
 pub enum Action { Quit }
 pub fn action_for(event: &Event) -> Option<Action>;   // キーバインドはここだけに書く
 impl App {
+    pub fn new(title: impl Into<String>) -> Self;     // should_quit = false。main が cli::version_text() を渡す
     pub fn apply(&mut self, action: Action);
     pub fn should_quit(&self) -> bool;
+    pub fn title(&self) -> &str;
 }
 
 // src/ui.rs
@@ -94,7 +96,8 @@ pub fn run(app: &mut App) -> anyhow::Result<()>;
 
 - `Event::Key` で `kind == KeyEventKind::Press` のものだけを見る
 - `KeyCode::Char('q')` かつ修飾キーなし → `Quit`
-- `KeyCode::Char('c')` かつ修飾キーが `CONTROL` のみ → `Quit`
+- `KeyCode::Char('c')` または `Char('C')` で、修飾キーに `CONTROL` を含む → `Quit`
+  （Caps Lock が有効だと `q` が `Q` になって効かない。Ctrl+C まで効かないと終了できなくなるので、こちらはゆるく受ける）
 - それ以外（`Event::Resize` を含む）→ `None`。リサイズはループが次の描画で反映する
 
 イベントループ（`tui::run`）:
@@ -130,8 +133,9 @@ pub fn run(app: &mut App) -> anyhow::Result<()>;
                           q / Ctrl+C: quit
 ```
 
-- `Layout` と `Paragraph`（中央寄せ）で配置する。`u16` の引き算を自分で書かない
-- 高さが足りなければ上の行から表示し、幅が足りなければ切り捨てる（ratatui の既定の挙動に任せる）
+- 1 行目は `App` が持つタイトル（`main` が `runs <バージョン>` を渡す。描画テストでは固定の文字列を渡す）
+- `Layout`（`Flex::Center`）で各行の矩形を決め、その中に左寄せで描く。`u16` の引き算を自分で書かない
+- 高さが足りなければ上の行から表示する。幅が足りなければ行頭から表示して末尾を切る
 
 | キー | 動作 | 衝突 |
 |---|---|---|
@@ -163,9 +167,9 @@ Options:
 
 | 層 | ファイル | ケース |
 |---|---|---|
-| 1 | `src/app/tests.rs` | `q` で終了／Ctrl+C で終了／`q` の Release・Repeat は無視／Esc・`Q`・Alt+q・Ctrl+q・修飾なしの `c` は無視／Resize は無視／初期状態は終了でない |
+| 1 | `src/app/tests.rs` | `q` で終了／Ctrl+C で終了／Ctrl+Shift+C（`C`）で終了／`q` の Release・Repeat は無視／Esc・`Q`・Alt+q・Ctrl+q・修飾なしの `c` は無視／Resize は無視／初期状態は終了でない |
 | 1 | `src/cli/tests.rs` | 引数なし→Run／`--version`・`-V`／`--help`・`-h`／知らない引数→エラー／余分な引数→エラー／両方指定は先勝ち／UTF-8 でない引数→エラー（Unix のみ） |
-| 2 | `src/ui/tests.rs` | 80x24 の画面全体を期待値と比較／10x3／1x1／0x0 で panic しない |
+| 2 | `src/ui/tests.rs` | 80x24 の画面全体を期待値と比較／10x2（末尾を切る）／1x1／0x0 で panic しない |
 | 3 | `tests/cli.rs` | `--version` の stdout と終了コード 0／`--help` の終了コード 0／知らない引数で終了コード 2 と stderr／引数なし（テストでは stdin・stdout がパイプ）で終了コード 1・stderr にメッセージ・stdout が空 |
 | 4 | 実機 | Windows Terminal と WSL Ubuntu: 起動→画面→`q`／Ctrl+C／リサイズ／極小サイズ／終了後のプロンプトとカーソル／panic 時の復元（下記） |
 
