@@ -113,7 +113,10 @@ pub fn run(app: &mut App) -> anyhow::Result<()>;
 - `try_init()` が `Err` のときは、その場で `ratatui::try_restore()` を呼んでからエラーを返す。
   復元側のエラーは捨てる（元のエラーを優先して返すため。理由をコメントに書く）
 - 復元は `Drop` で `ratatui::try_restore()` を呼ぶ。失敗したら `writeln!(io::stderr(), ..)` で伝え、その書き込みの失敗は無視する。
-  `ratatui::restore()` と `eprintln!` は使わない（stderr への書き込みに失敗すると panic するため）
+  自前のコードでは `ratatui::restore()` と `eprintln!` を使わない（stderr への書き込みに失敗すると panic するため）。
+  ratatui の panic hook と `Terminal` の drop が内部で `eprintln!` を使うのは変えられない
+- ただし panic の巻き戻し中（`std::thread::panicking()`）は `Drop` で復元しない。ratatui の panic hook が復元済みで、
+  alternate screen を出るシーケンスを二重に書くと、端末によってはカーソルが戻って panic メッセージが上書きされる
 - カーソルは `Terminal::draw` が描画のたびに隠す（カーソル位置を指定しない場合の ratatui の挙動）。
   戻すのは `Terminal` の drop で、ガードが `Terminal` を持つので、ガードの drop（alternate screen を出た後）で戻る
 - マウスキャプチャは有効にしない。追加の復元処理は要らない
@@ -170,10 +173,13 @@ Options:
 | 層 | ファイル | ケース |
 |---|---|---|
 | 1 | `src/app/tests.rs` | `q` で終了／Ctrl+C で終了／Ctrl+Shift+C（`C`）で終了／`q` の Release・Repeat は無視／Esc・`Q`・Alt+q・Ctrl+q・修飾なしの `c` は無視／Resize は無視／初期状態は終了でない |
-| 1 | `src/cli/tests.rs` | 引数なし→Run／`--version`・`-V`／`--help`・`-h`／知らない引数→エラー／余分な引数→エラー／両方指定は先勝ち／UTF-8 でない引数→エラー（Unix のみ） |
+| 1 | `src/cli/tests.rs` | 引数なし→Run／`--version`・`-V`／`--help`・`-h`／知らない引数→エラー／余分な引数→エラー／両方指定は先勝ち／UTF-8 でない引数→エラー（Unix）／不正な UTF-16 の引数→エラー（Windows） |
 | 2 | `src/ui/tests.rs` | 80x24 の画面全体を期待値と比較／10x2（末尾を切る）／1x1／0x0 で panic しない |
 | 3 | `tests/cli.rs` | `--version` の stdout と終了コード 0／`--help` の終了コード 0／知らない引数で終了コード 2 と stderr／引数なし（テストでは stdin・stdout がパイプ）で終了コード 1・stderr にメッセージ・stdout が空 |
 | 4 | 実機 | Windows Terminal と WSL Ubuntu: 起動→画面→`q`／Ctrl+C／リサイズ／極小サイズ／終了後のプロンプトとカーソル／panic 時の復元（下記） |
+
+「stdin **または** stdout が端末でない」の片側ずつのケースは、`cargo test` では作れない（子プロセスの stdout が常にパイプになる）。
+層 3 は両方とも端末でない場合だけを確かめ、片側ずつは `.claude/scripts/pty-check.sh` の「stdout がパイプ」「stdin が /dev/null」で確かめる。
 
 panic 時の復元の確認: 製品コードに panic を起こす仕掛けは入れない。確認のときだけイベントループに `panic!` を一時的に入れてビルドし、
 実機で復元とメッセージを確認した後、その差分を捨てる（コミットしない）。
@@ -206,6 +212,8 @@ panic 時の復元の確認: 製品コードに panic を起こす仕掛けは�
    土台の段階で全角の表示幅の問題を持ち込まない。日本語にするときは、表示幅のテストケースを足す。
 3. **SIGTERM / SIGHUP・端末を閉じたときは復元されない** → 決定: この課題には入れず、#3 で扱う。
    Unix で `kill` されると raw mode のままシェルに戻ることがある。対応にはシグナル処理のクレート（signal-hook など）が要る。
+   Windows でも同じ: Ctrl+Break とタブ・ウィンドウを閉じる操作（CTRL_CLOSE_EVENT）は、raw mode 中でも既定のハンドラーがプロセスを終了させ、
+   巻き戻しも `Drop` も走らない。Ctrl+Break では alternate screen とカーソル非表示がシェルに残る（実機では未確認）。これも #3 の対象とする。
 4. **panic 時の復元は自動テストにできない**。ratatui の panic hook に依存し、証明は実機確認（一時的な `panic!`）だけになる。
    自動化には PTY を扱うクレートが要る。この課題では入れない。
 5. **`try_init()` が最初の段階（raw mode の有効化）で失敗した場合**、`try_restore()` が alternate screen に入っていない端末へ離脱のシーケンスを書く。
@@ -213,7 +221,11 @@ panic 時の復元の確認: 製品コードに panic を起こす仕掛けは�
    stdin / stdout が端末であることを先に確認するので、この経路に入ることはまれと考える。
 6. **`try_init()` の `Err` 経路と実行中の I/O エラーの経路は、実機で再現する手段が無い**。コードレビューでの確認にとどまる（未検証として報告する）。
 7. **macOS は未検証のまま完了とする**（intent で合意済み）。
-8. **impact-analyzer は使っていない**。既存コードが 5 行の `src/main.rs` だけで、直接読めば足りるため。
+8. **Windows の mintty（ConPTY を使わない Git Bash のウィンドウ）は対象外**。`is_terminal` は msys の pty を端末と判定するが、
+   crossterm は隠れたコンソールからキーを読むので、画面に入ったままキーが届かない可能性がある（未確認）。一次対象は Windows Terminal。
+9. **`try_restore()` は raw mode の解除に失敗すると、alternate screen を出る前に返る**（ratatui の実装）。
+   このとき alternate screen が残る。起きるのは tcsetattr / SetConsoleMode が失敗したときだけなので、この課題では `try_restore()` をそのまま使う。
+10. **impact-analyzer は使っていない**。既存コードが 5 行の `src/main.rs` だけで、直接読めば足りるため。
 
 ## intent の未解決の問い
 

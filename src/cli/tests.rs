@@ -69,6 +69,17 @@ fn non_utf8_argument_is_error() {
     assert!(result.is_err());
 }
 
+#[cfg(windows)]
+#[test]
+fn invalid_utf16_argument_is_error() {
+    use std::os::windows::ffi::OsStringExt;
+
+    // 対になっていないサロゲート。UTF-8 に変換できない
+    let result = parse([OsString::from_wide(&[u16::from(b'-'), 0xd800])]);
+
+    assert!(result.is_err());
+}
+
 #[test]
 fn version_text_is_name_and_version() {
     assert_eq!(

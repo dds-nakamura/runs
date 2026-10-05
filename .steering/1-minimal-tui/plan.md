@@ -36,6 +36,13 @@ issue #1 で、以後の機能が乗る土台（モジュール構成・端末�
 - WSL での確認を再現できるよう、使ったスクリプトを `.claude/scripts/pty-check.sh` として追加した（計画に無かったファイル）。
   あわせて `rust-safety` 2 章に二重復元の注意を、`.claude/README.md` にスクリプトの説明を足した
 
+- reviewer の指摘（Important 1・Nit 8）への対応
+  - spec.md: Windows の Ctrl+Break / ウィンドウを閉じる操作でも復元されないことを懸念点 3 に追記（#3 の対象）。
+    巻き戻し中は復元しない例外、非端末の片側ずつのケースを `pty-check.sh` で確かめること、mintty、`try_restore()` の途中失敗を追記
+  - `src/cli/tests.rs`: `invalid_utf16_argument_is_error`（Windows のみ）を追加
+  - `pty-check.sh`: バイナリのパスを文字列に埋め込まず、環境変数で渡すようにした
+  - 対応しなかったもの: `try_restore()` が raw mode の解除に失敗すると alternate screen を出ない点（spec.md の懸念点 9）
+
 ## 変更するファイル
 
 - `src/main.rs`（変更）: `mod` 宣言、`fn main() -> ExitCode`。`cli::parse` の結果で分岐し、出力と終了コード（0 / 1 / 2）を決める。

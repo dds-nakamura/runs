@@ -23,8 +23,12 @@ for tool in script timeout stty; do
 done
 [ -x "$BIN" ] || { echo "NG: バイナリがありません: $BIN（先に cargo build する）"; exit 2; }
 
+# バイナリのパスは環境変数で渡す。下のシェル断片は単一引用符で書き、疑似端末の中の bash に "$BIN" を展開させる
+# （パスを文字列に埋め込むと、空白や引用符を含むパスで壊れる）
+export BIN
+
 MODES='stty -a | tr ";" "\n" | grep -oE -- "-?(icanon|isig|echo)\b" | tr "\n" " "; echo'
-RUN="stty cols 80 rows 24; \"$BIN\"; echo \"EXIT=\$?\"; $MODES"
+RUN='stty cols 80 rows 24; "$BIN"; echo "EXIT=$?"; '"$MODES"
 
 # run_case <名前> <キー入力を出すシェル断片> <疑似端末の中で実行するシェル断片> [timeout 秒]
 run_case() {
@@ -34,7 +38,7 @@ run_case() {
   f=$(mktemp)
   printf '%s\n' "$body" > "$f"
   echo "=== $name"
-  (sleep 1.5; eval "$keys"; sleep 1) | timeout "$limit" script -qec "bash $f" /dev/null | cat -v
+  (sleep 1.5; eval "$keys"; sleep 1) | timeout "$limit" script -qec "bash \"$f\"" /dev/null | cat -v
   echo "(script の終了コード: ${PIPESTATUS[1]})"
   rm -f "$f"
 }
@@ -46,14 +50,14 @@ run_case "Esc と Q では終了せず、その後の q で終了（EXIT=0）" \
 run_case "Esc と Q だけでは終了しない（timeout で script の終了コードが 124 になるのが正しい）" \
   "printf '\033'; sleep 0.7; printf Q; sleep 6" "$RUN" 5
 run_case "極小サイズ 1x1 で起動して q（EXIT=0）" "printf q" \
-  "stty cols 1 rows 1; \"$BIN\"; echo \"EXIT=\$?\"; stty cols 80 rows 24; $MODES"
+  'stty cols 1 rows 1; "$BIN"; echo "EXIT=$?"; stty cols 80 rows 24; '"$MODES"
 run_case "サイズ 0x0 で起動して q（EXIT=0）" "printf q" \
-  "stty cols 0 rows 0; \"$BIN\"; echo \"EXIT=\$?\"; stty cols 80 rows 24; $MODES"
+  'stty cols 0 rows 0; "$BIN"; echo "EXIT=$?"; stty cols 80 rows 24; '"$MODES"
 run_case "実行中に 80x24 から 30x4 へリサイズして q（描き直しが出る。EXIT=0）" "sleep 2; printf q" \
-  "stty cols 80 rows 24; (sleep 1.5; stty cols 30 rows 4 < /dev/tty) & \"$BIN\"; echo \"EXIT=\$?\"; $MODES"
+  'stty cols 80 rows 24; (sleep 1.5; stty cols 30 rows 4 < /dev/tty) & "$BIN"; echo "EXIT=$?"; '"$MODES"
 run_case "stdout がパイプ（メッセージが出て EXIT=1。エスケープシーケンスは出ない）" "true" \
-  "\"$BIN\" | cat; echo \"EXIT=\${PIPESTATUS[0]}\"; $MODES"
+  '"$BIN" | cat; echo "EXIT=${PIPESTATUS[0]}"; '"$MODES"
 run_case "stdin が /dev/null（メッセージが出て EXIT=1）" "true" \
-  "\"$BIN\" < /dev/null; echo \"EXIT=\$?\"; $MODES"
+  '"$BIN" < /dev/null; echo "EXIT=$?"; '"$MODES"
 run_case "--version をパイプへ（EXIT=0）" "true" \
-  "\"$BIN\" --version | cat; echo \"EXIT=\${PIPESTATUS[0]}\"; $MODES"
+  '"$BIN" --version | cat; echo "EXIT=${PIPESTATUS[0]}"; '"$MODES"
