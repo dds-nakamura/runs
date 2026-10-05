@@ -34,6 +34,12 @@ impl TerminalGuard {
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        // panic の巻き戻し中は、ratatui の panic hook が復元を済ませている。
+        // alternate screen を出るシーケンスをもう一度書くと、端末によってはカーソルが起動前の位置へ戻り、
+        // 直前に出た panic メッセージが次のプロンプトで上書きされる
+        if std::thread::panicking() {
+            return;
+        }
         if let Err(err) = ratatui::try_restore() {
             // eprintln! は書き込みに失敗すると panic する。復元の途中では panic させない。
             // stderr にも書けないなら、伝える先はもう無い

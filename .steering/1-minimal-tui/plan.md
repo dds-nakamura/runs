@@ -23,6 +23,14 @@ issue #1 で、以後の機能が乗る土台（モジュール構成・端末�
   戻すのは `Terminal` の drop なので、ガードが `Terminal` を持つ今の設計のままで復元される。spec.md を直した。コードの変更は無い
 - `TerminalGuard` は `tui::run` だけが使うので非公開にした
 - 層 1 に `ctrl_c_release_is_ignored` と `version_text_is_name_and_version` を足した
+- **panic 時に端末を二重に復元していた**。ratatui の panic hook が復元した後、巻き戻しでガードの drop がもう一度 `try_restore()` を呼び、
+  alternate screen を出るシーケンス（`ESC[?1049l`）が panic メッセージの後にも出ていた。xterm 系ではこのシーケンスがカーソル位置も復元するので、
+  メッセージが次のプロンプトで上書きされるおそれがある。`std::thread::panicking()` のときはガードの drop で復元しないようにした。
+  WSL の疑似端末で、直す前は 2 回、直した後は 1 回だけ出ることを確認した
+- **termio のセッションが無かった**ので、実機確認は次のように分けた
+  - WSL: `script` コマンドの疑似端末で自動確認した（キー入力・終了コード・出力されたエスケープシーケンス・終了後の `stty` のモード）。
+    端末エミュレータ上での見た目は確認していない
+  - Windows Terminal: 未実施。ユーザーに依頼する
 
 ## 変更するファイル
 
