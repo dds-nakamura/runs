@@ -86,7 +86,7 @@ issue #1 で、以後の機能が乗る土台（モジュール構成・端末�
 - **一番危険なのは `src/tui.rs`**。単体テストが書けず、誤ると利用者のシェルが壊れる。確認は層 3（非 TTY）と層 4（実機）とレビューに頼る
   - ガードの drop より先にエラーを表示すると、メッセージが alternate screen に消える。`tui::run` が返ってから `main` で表示する
   - `try_init()` の `Err` 経路と実行中の I/O エラーは実機で再現できない（未検証として報告する）
-- **Windows と Unix の差**: Press / Release の扱いは層 1 のテストで固定する。UTF-8 でない引数のテストは `#[cfg(unix)]` なので Windows では走らない（WSL で実行する）
+- **Windows と Unix の差**: Press / Release の扱いは層 1 のテストで固定する。UTF-8 に変換できない引数のテストは OS ごとに別（`#[cfg(unix)]` と `#[cfg(windows)]`）なので、Windows と WSL の両方で実行する
 - **極小サイズ**: 0x0・1x1 を層 2 のテストで確認する。レイアウトの余りが奇数のときの丸めは期待値にしない（80x24 と 10x2 は余りが偶数か 0）
 - **WSL でのビルド**: リポジトリは `/mnt/c` 上にある。`target/` を Windows と共有しないよう、WSL では `CARGO_TARGET_DIR=$HOME/.cache/runs-target` を指定する
 - **clippy `-D warnings`**: `main.rs` から呼ばれる前のモジュールは dead_code 警告になる。作業順 2〜5 の途中は `cargo test` だけで確認し、`verify.sh` は全体がつながった後に通す
@@ -98,10 +98,10 @@ issue #1 で、以後の機能が乗る土台（モジュール構成・端末�
 
 - `bash .claude/scripts/verify.sh --all` が `VERIFY OK`（Windows）
 - WSL の Ubuntu で `cargo fmt --check`・`cargo clippy --all-targets -- -D warnings`・`cargo test` が通る
-- 層 1 `src/app/tests.rs`: `initial_state_is_running`／`q_press_quits`／`ctrl_c_press_quits`／`ctrl_shift_c_press_quits`／`q_release_is_ignored`／`q_repeat_is_ignored`／
+- 層 1 `src/app/tests.rs`: `initial_state_is_running`／`q_press_quits`／`ctrl_c_press_quits`／`ctrl_shift_c_press_quits`／`q_release_is_ignored`／`q_repeat_is_ignored`／`ctrl_c_release_is_ignored`／
   `other_keys_are_ignored`（Esc・`Q`・Alt+q・Ctrl+q・修飾なしの `c`）／`resize_is_ignored`
 - 層 1 `src/cli/tests.rs`: `no_args_runs`／`version_flags`／`help_flags`／`unknown_argument_is_error`／`extra_argument_is_error`／`first_flag_wins`／
-  `control_chars_in_argument_are_replaced`／`help_text_lists_options`／`non_utf8_argument_is_error`（Unix のみ）
+  `control_chars_in_argument_are_replaced`／`help_text_lists_options`／`version_text_is_name_and_version`／`non_utf8_argument_is_error`（Unix のみ）／`invalid_utf16_argument_is_error`（Windows のみ）
 - 層 2 `src/ui/tests.rs`（タイトルは固定の `runs 1.2.3`）: `renders_centered_at_80x24`（画面全体を比較）／`truncates_at_10x2`／`renders_first_cell_at_1x1`／`does_not_panic_at_0x0`
 - 層 3 `tests/cli.rs`: `version_prints_to_stdout`（`runs <バージョン>`、終了コード 0）／`short_version_flag`／`help_exits_zero`／
   `unknown_argument_exits_2`（stderr にメッセージ）／`no_args_without_tty_exits_1`（stderr にメッセージ、stdout が空）

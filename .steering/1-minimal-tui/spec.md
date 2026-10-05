@@ -213,7 +213,8 @@ panic 時の復元の確認: 製品コードに panic を起こす仕掛けは�
 3. **SIGTERM / SIGHUP・端末を閉じたときは復元されない** → 決定: この課題には入れず、#3 で扱う。
    Unix で `kill` されると raw mode のままシェルに戻ることがある。対応にはシグナル処理のクレート（signal-hook など）が要る。
    Windows でも同じ: Ctrl+Break とタブ・ウィンドウを閉じる操作（CTRL_CLOSE_EVENT）は、raw mode 中でも既定のハンドラーがプロセスを終了させ、
-   巻き戻しも `Drop` も走らない。Ctrl+Break では alternate screen とカーソル非表示がシェルに残る（実機では未確認）。これも #3 の対象とする。
+   巻き戻しも `Drop` も走らない。Ctrl+Break では alternate screen とカーソル非表示がシェルに残る。コンソールの入力モード（行入力・エコーを外した状態）も残る可能性がある
+   （crossterm は Windows で起動前のモードを保存しない。いずれも実機では未確認）。これも #3 の対象とする。
 4. **panic 時の復元は自動テストにできない**。ratatui の panic hook に依存し、証明は実機確認（一時的な `panic!`）だけになる。
    自動化には PTY を扱うクレートが要る。この課題では入れない。
 5. **`try_init()` が最初の段階（raw mode の有効化）で失敗した場合**、`try_restore()` が alternate screen に入っていない端末へ離脱のシーケンスを書く。
@@ -224,7 +225,7 @@ panic 時の復元の確認: 製品コードに panic を起こす仕掛けは�
 8. **Windows の mintty（ConPTY を使わない Git Bash のウィンドウ）は対象外**。`is_terminal` は msys の pty を端末と判定するが、
    crossterm は隠れたコンソールからキーを読むので、画面に入ったままキーが届かない可能性がある（未確認）。一次対象は Windows Terminal。
 9. **`try_restore()` は raw mode の解除に失敗すると、alternate screen を出る前に返る**（ratatui の実装）。
-   このとき alternate screen が残る。起きるのは tcsetattr / SetConsoleMode が失敗したときだけなので、この課題では `try_restore()` をそのまま使う。
+   このとき alternate screen が残る。起きるのは raw mode の解除処理（端末を開く・モードの取得・設定）が失敗したときだけなので、この課題では `try_restore()` をそのまま使う。
 10. **impact-analyzer は使っていない**。既存コードが 5 行の `src/main.rs` だけで、直接読めば足りるため。
 
 ## intent の未解決の問い
