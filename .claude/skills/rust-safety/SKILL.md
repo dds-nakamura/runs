@@ -36,6 +36,8 @@ raw mode・alternate screen・カーソル非表示・マウスキャプチャ�
   `try_init()` を呼び直さずに raw mode と alternate screen だけを切り替える。
   戻ったら `terminal.clear()` を呼んでから描画する（差分描画の基準が古いままだと画面が欠ける）
 - 有効化と復元を RAII ガード（`Drop` で復元）にまとめ、早期 return・`?` でも必ず復元されるようにする
+- panic の巻き戻し中（`std::thread::panicking()`）は、ガードの `Drop` で復元しない。panic hook が復元済みで、
+  alternate screen を出るシーケンスを二重に書くと、端末によってはカーソルが戻って panic メッセージが上書きされる
 - panic hook を設定し、**panic メッセージを出す前に**端末を復元する（復元しないとメッセージが alternate screen に消える）
 - Ctrl+C は raw mode ではシグナルにならずキー入力として届く。終了キーとして明示的に扱う
 - 復元処理自体のエラーで panic しない

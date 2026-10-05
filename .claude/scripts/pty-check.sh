@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# 疑似端末（util-linux の script コマンド）で runs を起動し、キー入力・終了コード・
+# 出力されたエスケープシーケンス・終了後の端末モードを表示する（/tui-test の層 4 の一部。Linux 用）。
+#
+#   bash .claude/scripts/pty-check.sh [バイナリ] [ケース名の正規表現]
+#
+# Windows からは WSL で実行する（target/ を Windows と共有しないこと）:
+#   wsl.exe -e bash -lc 'cd /mnt/c/<リポジトリ> && export CARGO_TARGET_DIR=$HOME/.cache/runs-target \
+#     && cargo build --locked && bash .claude/scripts/pty-check.sh'
+#
+# 合否は判定しない。出力を読んで次を確かめる:
+#   - 起動時に ESC[?1049h（alternate screen に入る）、終了時に ESC[?1049l が 1 回だけ出て、その後に ESC[?25h（カーソル表示）
+#   - EXIT= が期待する終了コード
+#   - 終了後のモードが "isig icanon echo"（raw mode が残っていると -isig -icanon -echo になる）
+# 端末エミュレータ上での見た目は確認できない。実端末での目視は別に行う。
+set -u
+
+BIN="${1:-${CARGO_TARGET_DIR:-target}/debug/runs}"
+FILTER="${2:-.}"
+
+for tool in script timeout stty; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "NG: $tool が見つかりません"; exit 2; }
+done
+[ -x "$BIN" ] || { echo "NG: バイナリがありません: $BIN（先に cargo build する）"; exit 2; }
+
+MODES='stty -a | tr ";" "\n" | grep -oE -- "-?(icanon|isig|echo)\b" | tr "\n" " "; echo'
+RUN="stty cols 80 rows 24; \"$BIN\"; echo \"EXIT=\$?\"; $MODES"
+
+# run_case <名前> <キー入力を出すシェル断片> <疑似端末の中で実行するシェル断片> [timeout 秒]
+run_case() {
+  local name="$1" keys="$2" body="$3" limit="${4:-20}"
+  [[ "$name" =~ $FILTER ]] || return 0
+  local f
+  f=$(mktemp)
+  printf '%s\n' "$body" > "$f"
+  echo "=== $name"
+  (sleep 1.5; eval "$keys"; sleep 1) | timeout "$limit" script -qec "bash $f" /dev/null | cat -v
+  echo "(script の終了コード: ${PIPESTATUS[1]})"
+  rm -f "$f"
+}
+
+run_case "q で終了（EXIT=0）" "printf q" "$RUN"
+run_case "Ctrl+C で終了（EXIT=0）" "printf '\003'" "$RUN"
+run_case "Esc と Q では終了せず、その後の q で終了（EXIT=0）" \
+  "printf '\033'; sleep 0.7; printf Q; sleep 0.7; printf q" "$RUN"
+run_case "Esc と Q だけでは終了しない（timeout で script の終了コードが 124 になるのが正しい）" \
+  "printf '\033'; sleep 0.7; printf Q; sleep 6" "$RUN" 5
+run_case "極小サイズ 1x1 で起動して q（EXIT=0）" "printf q" \
+  "stty cols 1 rows 1; \"$BIN\"; echo \"EXIT=\$?\"; stty cols 80 rows 24; $MODES"
+run_case "サイズ 0x0 で起動して q（EXIT=0）" "printf q" \
+  "stty cols 0 rows 0; \"$BIN\"; echo \"EXIT=\$?\"; stty cols 80 rows 24; $MODES"
+run_case "実行中に 80x24 から 30x4 へリサイズして q（描き直しが出る。EXIT=0）" "sleep 2; printf q" \
+  "stty cols 80 rows 24; (sleep 1.5; stty cols 30 rows 4 < /dev/tty) & \"$BIN\"; echo \"EXIT=\$?\"; $MODES"
+run_case "stdout がパイプ（メッセージが出て EXIT=1。エスケープシーケンスは出ない）" "true" \
+  "\"$BIN\" | cat; echo \"EXIT=\${PIPESTATUS[0]}\"; $MODES"
+run_case "stdin が /dev/null（メッセージが出て EXIT=1）" "true" \
+  "\"$BIN\" < /dev/null; echo \"EXIT=\$?\"; $MODES"
+run_case "--version をパイプへ（EXIT=0）" "true" \
+  "\"$BIN\" --version | cat; echo \"EXIT=\${PIPESTATUS[0]}\"; $MODES"

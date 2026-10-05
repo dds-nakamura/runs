@@ -11,6 +11,7 @@ EVECLOUD とは独立した単独プロジェクト。EVECLOUD の規約・Backl
 - 個別テスト: `cargo test <テスト名>`
 - 実行: **対話 TUI を Bash ツールで起動しない**（TTY が無くハングする）。非対話なら `cargo run -- <引数>`。
   実機確認は PTY を持つ端末で行う（`/tui-test` の「層 4」）
+- 疑似端末での確認（Linux / WSL）: `bash .claude/scripts/pty-check.sh`（キー入力・終了コード・終了後の端末モードを表示する。合否は出力を読んで判断）
 
 ## 開発フロー（成果物を順に `.steering/<ブランチ名の type/ 以降>/` にコミット）
 
@@ -32,8 +33,15 @@ clippy 警告を `#[allow(...)]` で黙らせる場合は理由コメント必�
 
 ## Architecture（暫定）
 
-- クレート名・バイナリ名は `runs`。単一のバイナリクレート（edition 2024、MSRV 1.88、`publish = false`）。
-  現状は `src/main.rs` のみ（`#![forbid(unsafe_code)]`）。モジュール構成は最初の機能の spec で決めて記入する
+- クレート名・バイナリ名は `runs`。単一のバイナリクレート（edition 2024、MSRV 1.88、`publish = false`、lib ターゲットなし）
+- モジュール（実端末に触るのは `tui` と `main` だけ）
+  - `src/main.rs`: 引数の解釈結果で分岐、エラーの表示、終了コード（0 = 正常、1 = 実行時エラー、2 = 引数の誤り）。`#![forbid(unsafe_code)]`
+  - `src/cli.rs`: 引数の解釈（手書き。`Command`）、バージョンと使い方の文字列
+  - `src/app.rs`: 状態 `App`、`Action`、キーバインド（`action_for`: イベント → Action）、更新（`App::apply`）
+  - `src/ui.rs`: 描画（`draw(frame, app)`）。`TestBackend` に描ける
+  - `src/tui.rs`: 端末ガード（`TerminalGuard`）とイベントループ（`run`）
+- テストは実装と別ファイル: `src/<モジュール>/tests.rs`（層 1・2）、`tests/cli.rs`（層 3）。`tui` と `main` は層 3・4 で確認する
+- 画面と CLI のメッセージは英語（ASCII）。出力は `writeln!` を使い、`println!` / `eprintln!` は使わない（閉じたパイプへ書くと panic する）
 - 依存: `ratatui` 0.30（`default-features = false`、feature は `crossterm` / `layout-cache` / `underline-color`）、`anyhow` 1。
   crossterm（0.29）は直接依存にせず `ratatui::crossterm` を使う（ratatui とバージョンがずれるのを避ける。例外は `rust-safety` 8章）
 - 方針: 状態（モデル）・更新（入力→状態）・描画を分け、状態と更新は端末なしでテストできるようにする
@@ -60,7 +68,8 @@ clippy 警告を `#[allow(...)]` で黙らせる場合は理由コメント必�
 ## 未確定事項（決まったら更新する）
 
 - [x] 対象 OS・端末 → Windows 11（Windows Terminal）/ Linux / macOS の 3 OS すべてを一次対象とする。conhost は一次対象に含めない
-- [ ] Linux / macOS の確認手段（実機確認は Linux = WSL の Ubuntu が候補、macOS = 未定。CI の 3 OS マトリクスは未導入）
+- [x] Linux の確認手段 → WSL の Ubuntu 24.04（`cargo test` と `pty-check.sh`。`CARGO_TARGET_DIR=$HOME/.cache/runs-target` を指定し、`target/` を Windows と共有しない）
+- [ ] macOS の確認手段（未定）。CI の 3 OS マトリクスは未導入
 - [x] TUI ライブラリ → ratatui 0.30 + crossterm 0.29（`ratatui::crossterm` 経由）
 - [x] エラー処理クレート → `anyhow` のみで開始。エラーの種類で分岐する必要が出たら `thiserror` の追加を spec で合意する
 - [x] 課題管理とリモート → GitHub `dds-nakamura/runs`（private）
