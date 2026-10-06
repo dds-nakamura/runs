@@ -2,6 +2,9 @@
 
 mod app;
 mod cli;
+mod config;
+mod output;
+mod runner;
 mod tui;
 mod ui;
 
@@ -29,9 +32,20 @@ fn main() -> ExitCode {
 }
 
 fn run() -> ExitCode {
-    let mut app = App::new(cli::version_text());
+    // 設定の問題は TUI を起動する前に、通常の画面で伝える
+    let config = match std::env::current_dir()
+        .map_err(anyhow::Error::from)
+        .and_then(|dir| config::load(&dir))
+    {
+        Ok(config) => config,
+        Err(err) => {
+            report(&format!("{err:#}"));
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let mut app = App::new(cli::version_text(), &config);
     // tui::run が返った時点で端末は復元済みなので、ここで出すメッセージは通常の画面に残る
-    match tui::run(&mut app) {
+    match tui::run(&mut app, &config) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             report(&format!("{err:#}"));

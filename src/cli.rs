@@ -56,9 +56,15 @@ pub fn help_text() -> String {
          \n\
          Options:\n  \
            -h, --help     Print help\n  \
-           -V, --version  Print version",
+           -V, --version  Print version\n\
+         \n\
+         Commands are read from {file} in the current directory or a parent:\n\
+         \n\
+         {example}",
         version = version_text(),
         name = env!("CARGO_PKG_NAME"),
+        file = crate::config::FILE_NAME,
+        example = crate::config::EXAMPLE,
     )
 }
 
