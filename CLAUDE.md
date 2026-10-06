@@ -74,6 +74,7 @@ clippy 警告を `#[allow(...)]` で黙らせる場合は理由コメント必�
 - panic・エラー時に端末を復元しない（raw mode / alternate screen / カーソル非表示のまま終了）
 - `area.width - 2` のような `u16` の減算で、極小の端末サイズでアンダーフローさせる。`&s[..n]` で UTF-8 の文字境界を壊す
 - Windows と Unix の差を片側だけで実装・確認する（crossterm の Windows ではキーの Press と Release が両方届く、パス区切り、改行）
+- `cmd` に渡す文字列を std の `arg` で渡す（MSVC 流の `\"` エスケープを `cmd` は解釈しない）。`raw_arg` で全体を `"` に包み、`/S /C` と組み合わせる（`runner::push_command_arg`）
 - TUI 実行中に `println!` / `dbg!` で stdout に出して画面を崩す
 - `Cargo.lock` を手で編集する／`cargo update` で無関係な依存まで上げる
 - 実装中に計画が変わったとき、plan.md に差分を追記するだけで、古くなった節（証明のテスト名・リスク・spec の設計）を直さない
