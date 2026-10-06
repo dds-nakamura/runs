@@ -40,10 +40,22 @@ argument-hint: <対象画面・キー操作・機能>
 | `src/app/tests.rs` | `feed(&mut app, &event)` | イベントループと同じ手順（`action_for` → `apply`）で 1 件処理する |
 | `src/ui/tests.rs` | `render(width, height)` | 固定タイトルの `App` を `TestBackend` に描き、`Terminal` を返す |
 | `src/cli/tests.rs` | `parse_args(&[..])` / `error_message(&[..])` | 引数を解釈する／エラーメッセージを取り出す |
-| `tests/cli.rs` | `runs(&[..])` / `stdout(&output)` / `stderr(&output)` | バイナリを端末なし（stdin は null、出力はパイプ）で実行する |
+| `src/app/tests.rs` | `config(&[..])` / `app()` / `exit_status(code)` / `output(id, text)` | コマンド一覧付きの `App` を作る／OS ごとの `ExitStatus`／`RunnerEvent::Output` を作る |
+| `src/ui/tests.rs` | `sample_app()` / `render(&mut app, w, h)` / `row(list, output)` | 3 コマンドの固定状態／`tui::run` と同じ手順（`layout` → `set_output_height` → `draw`）で描く／80 桁の期待行を組む |
+| `src/config/tests.rs` | `parse_ok` / `parse_err` / `TempDir` | 解釈の成功・失敗を取り出す／一時ディレクトリ（drop で消す） |
+| `src/runner/tests.rs` | `spec(command)` / `long_running()` / `collect_until_done(&rx)` / `output_lines` / `exit_code` | 実プロセスのテスト用。`Exited` か `SpawnFailed` まで 10 秒のタイムアウト付きで集める |
+| `tests/cli.rs` | `runs(&[..])` / `runs_in(dir, &[..])` / `stdout(&output)` / `stderr(&output)` / `TempDir` | バイナリを端末なし（stdin は null、出力はパイプ）で実行する。`runs_in` はカレントディレクトリを変える |
+
+子プロセスのテスト（`runner`）の書き方:
+
+- OS 既定のシェル（`config::default_shell()`）と、`sh` / `cmd` の両方にある `echo` / `exit` / `1>&2` を使う。`CARGO_BIN_EXE_runs` は結合テスト専用で単体テストでは使えない
+- 終わらないコマンドは `long_running()`（Unix: `sleep 30`、Windows: `ping -n 30 127.0.0.1`）。シェルを通さず `shell` に直接渡す
+- 受信は必ずタイムアウト付き（`recv_timeout`）。`ping` のように起動直後に出力するコマンドでは、`Started` の前後に `Output` が割り込むことを前提にする
+- Windows と WSL の両方で走らせる（停止の実装が `cfg` で分かれる）
 
 - 描画の期待値は、レイアウトの余りが偶数になるサイズで書く（80x24 など）。余りが奇数のときの丸めを期待値にしない
 - 描画テストにクレートのバージョンなど変わる値を入れない（`App::new` に固定の文字列を渡す）
+- 画面の期待値は `row(list, output)` のように桁数を固定したヘルパーで組み、手で空白を数えない
 - `tests/cli.rs` から内部の関数は呼べない（lib ターゲットが無い）。内部のロジックは `src/<モジュール>/tests.rs` で確かめる
 
 ## 手順

@@ -247,7 +247,7 @@ runner.stop_all_and_wait(2 秒)   // ガードの drop（端末の復元）よ�
 | 1 | `src/config/tests.rs` | 最小の設定／`shell` と `cwd` の省略と指定／`cwd` の相対・絶対／名前の重複→エラー／必須項目の欠落→エラー（行番号を含む）／空の `shell`→エラー／順序の保持／親ディレクトリの探索（一時ディレクトリ） |
 | 1 | `src/output/tests.rs` | CSI（色・カーソル移動）の除去／OSC（タイトル変更、BEL と ST の両方の終端）の除去／単独 ESC／C0・C1 制御文字→`?`／タブ→空白／不正 UTF-8→U+FFFD／上限 10,000 行で古い行から捨てる／`clear` |
 | 1 | `src/app/tests.rs` | 選択の移動と端／`Run` → `Running` + `Effect::Start`／実行中の `Run` は無効／`Stop` は実行中だけ `Effect::Stop`／`Exited(code)`→`Exited`／停止要求後の `Exited`→`Stopped`／`SpawnFailed`／再実行で出力が消える／出力は選択中のものだけ／`PageUp` で `At`、`End` で `Follow`、遡り中は追従しない／`q` と Ctrl+C は #1 のまま |
-| 1 | `src/runner/tests.rs` | 実プロセスで確かめる。シェルは通さず、`Runner::new` の `shell` に実行ファイルそのもの（`env!("CARGO_BIN_EXE_runs")`）を渡し、`command` に `--version` / `--bogus` を書く（`cmd /C` の引用符の癖を避け、OS に依存しない）: 起動→出力→`Exited(0)`／終了コード 2 の伝播／存在しないシェル→`SpawnFailed`／存在しない `cwd`→`SpawnFailed`／長く動くコマンド（Unix: `sleep 30`、Windows: `ping -n 30 127.0.0.1`）を `stop` → `Exited` が届く／`stop_all_and_wait` で全部止まる。各ケースに受信のタイムアウト（10 秒）を付ける |
+| 1 | `src/runner/tests.rs` | 実プロセスで確かめる。OS 既定のシェル（`sh -c` / `cmd /C`）と、両方にある `echo` / `exit` を使う（`CARGO_BIN_EXE_runs` は結合テスト専用で単体テストでは使えない）。終わらないコマンドだけは `sleep` / `ping` を `shell` に直接渡す: 起動→出力→`Exited(0)`／終了コード 2 の伝播／存在しないシェル→`SpawnFailed`／存在しない `cwd`→`SpawnFailed`／長く動くコマンド（Unix: `sleep 30`、Windows: `ping -n 30 127.0.0.1`）を `stop` → `Exited` が届く／`stop_all_and_wait` で全部止まる。各ケースに受信のタイムアウト（10 秒）を付ける |
 | 2 | `src/ui/tests.rs` | 固定の `App` 状態（3 コマンド、各状態）を 80x24 で描いて比較／出力が多いときの末尾表示／`At(n)` の表示／1x1・0x0 で panic しない／長い名前で左ペインが 40% に収まる |
 | 3 | `tests/cli.rs` | `runs.toml` が無いディレクトリで起動（非 TTY）→ 終了コード 1 と「runs.toml」を含むメッセージ／壊れた `runs.toml` → 終了コード 1 と行番号／`--help` に `runs.toml` が出る／既存 5 ケースは変えない |
 | 4 | 実機 | Windows Terminal と WSL: リポジトリ直下の `runs.toml`（`verify` / `test` / `clippy` を登録）で起動→`test` を実行→出力が流れる→`PageUp` で遡る→`End`→終わらないコマンド（`sleep 300` / `ping -t`）を実行したまま別のコマンドを実行→`s` で停止→子プロセスが残っていない（`ps` / `tasklist`）→`q` で全停止して終了→端末が戻る。`pty-check.sh` は既存ケースをそのまま使う（リポジトリ直下に `runs.toml` があるので起動できる） |
@@ -289,7 +289,7 @@ runner.stop_all_and_wait(2 秒)   // ガードの drop（端末の復元）よ�
    UTF-8 として読むと文字化けする。Rust・Go・Node・Python の出力は UTF-8 なので、この課題では UTF-8 固定とし、CP932 は文字化けを許容する。
    必要になれば `encoding_rs` を検討する
 5. **出力は行単位で受けるので、改行の無い進捗表示（`\r` で上書きするプログレスバー）は 1 行に溜まる**。`\r` は `sanitize` で `?` にせず、
-   「最後の `\r` 以降だけを残す」扱いにする（プログレスバーは最終状態だけ出る）。完全な再現はしない
+   「行末の `\r` を 1 つ落としてから、最後の `\r` 以降だけを残す」扱いにする（CRLF の行は空にならず、プログレスバーは最終状態だけ出る）。完全な再現はしない
 6. **子プロセスが stdin を読もうとすると即座に EOF になる**（`Stdio::null()`）。対話的なコマンドは動かない。この道具の用途（ビルド・テスト・サーバー）では問題にしない
 7. **`stop_all_and_wait` の猶予 2 秒 + 強制終了で、終了が最大 2 秒ほど遅れる**。実行中のコマンドが無ければ即座に終わる
 8. **`toml` 1.1 の MSRV は 1.85**、`serde` は 1.56。プロジェクトの MSRV 1.88 と矛盾しない。ただし 1.88 のツールチェーンでの実ビルドは引き続き未検証

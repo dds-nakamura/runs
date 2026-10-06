@@ -20,6 +20,20 @@ issue #5 で最初の機能を作る: プロジェクト直下の `runs.toml` �
 3. **左ペインの幅の計算**: `u16` の掛け算は 65535 × 40 であふれるので、`u32` で `width * 40 / 100` を計算して `u16` に戻す
 4. **`kill` / `taskkill` の出力は捨てる**（`Stdio::null()`）。TUI 実行中に端末へ流れると画面が崩れる
 
+## 実装中に分かったこと（計画との差分。該当する節も直してある）
+
+- **`runner` の単体テストで `CARGO_BIN_EXE_runs` は使えない**（結合テスト専用の環境変数）。代わりに OS 既定のシェル（`sh -c` / `cmd /C`）と、
+  両方にある `echo` / `exit` を使う。本番と同じ経路を通るので、むしろ妥当。終わらないコマンドだけは `sleep` / `ping` を `shell` に直接渡す。spec.md も直した
+- **`sanitize` の `\r` の規則を 1 段足した**: 行末の `\r` を 1 つ落としてから「最後の `\r` 以降を残す」。Windows の CRLF 出力で行が空になるのを防ぐ。
+  読み取りスレッド側でも LF / CR を落とす（二重で安全側）
+- **テスト専用のゲッターは `#[cfg(test)]`**（`App::scroll`、`OutputBuffer::dropped`、`Runner::is_running`）。本体で使われず dead_code になるため
+- **`Started` 通知で状態を `Running` に合わせる**（`Run` で先に実行中にしているが、通知が正）
+- **`stop_all_and_wait_stops_everything` が Windows で一度落ちた**: `ping` が起動直後に空行を出すため、`Started` 2 件の前に `Output` が割り込む。
+  テスト側で `Output` を読み飛ばすようにした（実装の問題ではない）
+- **実機確認（WSL）は疑似端末のスクリプトで行った**: 既存の `pty-check.sh` 10 ケースに加え、一時的な `runs.toml`（`sleep 300; echo done` / `echo … exit 3` / 存在しない `cwd`）で
+  「`s` で停止 → `stopped`、`pgrep -f "sleep 300"` が 0」「実行したまま `q` → 終了コード 0、残存 0」「`exit 3` と stdout / stderr の表示」「`failed` と理由」を確認した。
+  このスクリプトはリポジトリに入れていない（`pty-check.sh` への統合は別途）
+
 ## 変更するファイル
 
 新規
@@ -95,20 +109,24 @@ issue #5 で最初の機能を作る: プロジェクト直下の `runs.toml` �
 自動
 
 - `bash .claude/scripts/verify.sh --all` が `VERIFY OK`（Windows）。WSL の Ubuntu で fmt / clippy（`-D warnings`）/ test が通る
-- 層 1 `src/output/tests.rs`: `strips_csi_sequences`／`strips_osc_with_bel_and_st`／`strips_lone_escape`／`replaces_control_chars`／`expands_tab`／
-  `keeps_text_after_last_carriage_return`／`lossy_utf8_becomes_replacement_char`／`drops_oldest_lines_over_limit`／`clear_empties_buffer`
-- 層 1 `src/config/tests.rs`: `parses_minimal_config`／`default_shell_per_os`／`custom_shell`／`cwd_defaults_to_root`／`relative_and_absolute_cwd`／
-  `duplicate_name_is_error`／`missing_required_field_is_error_with_line`／`empty_shell_is_error`／`empty_name_is_error`／`preserves_order`／
-  `load_searches_parent_directories`／`load_without_file_is_error_with_example`
-- 層 1 `src/runner/tests.rs`（受信は 10 秒でタイムアウト）: `runs_command_and_reports_exit_zero`／`propagates_exit_code`／`captures_stdout_and_stderr`／
-  `missing_shell_is_spawn_failed`／`missing_cwd_is_spawn_failed`／`stop_terminates_long_running_command`／`stop_all_and_wait_stops_everything`／
-  `is_running_tracks_lifecycle`
-- 層 1 `src/app/tests.rs`: 既存 9 件はそのまま＋`select_moves_and_stops_at_ends`／`run_marks_running_and_requests_start`／`run_on_running_is_noop`／
-  `stop_requests_only_when_running`／`exited_sets_code`／`exited_after_stop_request_is_stopped`／`signal_exit_is_stopped`／`spawn_failed_sets_state_and_message`／
-  `rerun_clears_output`／`output_goes_to_its_command`／`page_up_leaves_follow`／`end_returns_to_follow`／`new_output_does_not_move_while_scrolled`／`keys_map_to_actions`
-- 層 2 `src/ui/tests.rs`: `renders_list_and_output_at_80x24`（3 コマンド、各状態、画面全体を比較）／`shows_tail_when_following`／`shows_offset_when_scrolled`／
-  `list_width_is_capped_at_40_percent`／`does_not_panic_at_tiny_sizes`（0x0・1x1・1x5・5x1）／`layout_output_height_matches_draw`
-- 層 3 `tests/cli.rs`: 既存 5 件＋`no_config_exits_1_with_hint`／`broken_config_exits_1_with_line_number`／`help_mentions_runs_toml`
+- 層 1 `src/output/tests.rs`（13 件）: `strips_csi_sequences`／`strips_osc_with_bel_and_st`／`strips_lone_escape`／`replaces_control_chars`／`expands_tab`／
+  `keeps_text_after_last_carriage_return`／`trailing_carriage_return_is_line_ending_not_overwrite`／`leaves_unicode_untouched`／`lossy_utf8_becomes_replacement_char`／
+  `push_raw_sanitizes`／`drops_oldest_lines_over_limit`／`clear_empties_buffer`／`zero_limit_keeps_nothing`
+- 層 1 `src/config/tests.rs`（15 件）: `parses_minimal_config`／`default_shell_per_os`／`custom_shell`／`cwd_defaults_to_root`／`relative_and_absolute_cwd`／
+  `duplicate_name_is_error`／`missing_required_field_is_error_with_line`／`syntax_error_is_error_with_line`／`empty_shell_is_error`／`empty_name_is_error`／
+  `no_commands_is_error`／`preserves_order`／`load_searches_parent_directories`／`load_without_file_is_error_with_example`／`load_reports_syntax_error_with_file_name`
+- 層 1 `src/runner/tests.rs`（12 件。実プロセス、受信は 10 秒でタイムアウト）: `runs_command_and_reports_exit_zero`／`propagates_exit_code`／`captures_stdout_and_stderr`／
+  `output_lines_have_no_line_ending`／`events_carry_the_command_id`／`missing_shell_is_spawn_failed`／`missing_cwd_is_spawn_failed`／`stop_terminates_long_running_command`／
+  `stop_all_and_wait_stops_everything`／`stop_all_and_wait_returns_immediately_without_processes`／`is_running_tracks_lifecycle`／`start_while_running_is_ignored`
+- 層 1 `src/app/tests.rs`（30 件）: #1 の 9 件はそのまま＋`keys_map_to_actions`／`lists_commands_in_config_order`／`select_moves_and_stops_at_ends`／
+  `run_marks_running_and_requests_start`／`run_on_running_is_noop`／`stop_requests_only_when_running`／`exited_sets_code`／`exited_after_stop_request_is_stopped`／
+  `signal_exit_is_stopped`（Unix のみ）／`spawn_failed_sets_state_and_message`／`rerun_clears_output`／`output_goes_to_its_command`／`events_for_unknown_id_are_ignored`／
+  `output_is_sanitized`／`follows_tail_by_default`／`page_up_leaves_follow`／`page_down_returns_to_follow_at_the_end`／`end_returns_to_follow`／
+  `new_output_does_not_move_while_scrolled`／`page_up_with_few_lines_stays_at_top`／`selecting_another_command_resets_scroll`／`zero_height_does_not_panic`
+- 層 1 `src/cli/tests.rs`: 既存＋`help_text_explains_config_file`
+- 層 2 `src/ui/tests.rs`（7 件）: `renders_list_and_output_at_80x24`（3 コマンド、画面全体を比較）／`shows_offset_when_scrolled`／`shows_all_states`／
+  `list_width_is_capped_at_40_percent`／`layout_reserves_one_row_for_help`／`does_not_panic_at_tiny_sizes`（0x0・1x1・1x5・5x1・0x5・5x0）／`long_names_and_lines_are_truncated`
+- 層 3 `tests/cli.rs`（8 件）: 既存 5 件＋`help_mentions_runs_toml`／`no_config_exits_1_with_hint`／`broken_config_exits_1_with_line_number`
 
 実機（層 4。Windows Terminal はユーザー、WSL は私が疑似端末で。termio のセッションがあれば私が両方）
 
