@@ -295,7 +295,9 @@ fn lock(child: &Mutex<Child>) -> MutexGuard<'_, Child> {
 
 /// 利用者が書いたコマンド文字列をシェルに渡す。
 ///
-/// Windows の `cmd` は、std が MSVC の規則で付ける `\"` のエスケープを解釈しないので、そのまま渡す。
+/// Windows の `cmd` は、std が MSVC の規則で付ける `\"` のエスケープを解釈しないので `raw_arg` で渡す。
+/// さらに `cmd /C` は引用符が 3 つ以上あると先頭と末尾の `"` を外す規則があり、`"C:\Program Files\x.exe" "a b"` のような
+/// コマンドが壊れる。全体を `"` で包み、既定のシェルの `/S`（先頭と末尾の `"` だけを外す）と組み合わせて、中身をそのまま届ける。
 /// それ以外（`sh`、`pwsh` など）は通常の引数として渡す。
 #[cfg(windows)]
 fn push_command_arg(command: &mut Command, program: &str, text: &str) {
@@ -305,7 +307,7 @@ fn push_command_arg(command: &mut Command, program: &str, text: &str) {
         .and_then(|s| s.to_str())
         .unwrap_or(program);
     if name.eq_ignore_ascii_case("cmd") {
-        command.raw_arg(text);
+        command.raw_arg(format!("\"{text}\""));
     } else {
         command.arg(text);
     }

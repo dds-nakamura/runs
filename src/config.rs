@@ -117,7 +117,8 @@ pub fn parse(text: &str, root: &Path) -> Result<Config> {
 /// OS ごとの既定のシェル。
 pub fn default_shell() -> Vec<String> {
     if cfg!(windows) {
-        vec!["cmd".to_owned(), "/C".to_owned()]
+        // /S: 先頭と末尾の `"` だけを外す（runner がコマンド全体を `"` で包んで渡す）
+        vec!["cmd".to_owned(), "/S".to_owned(), "/C".to_owned()]
     } else {
         vec!["sh".to_owned(), "-c".to_owned()]
     }

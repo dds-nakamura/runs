@@ -76,7 +76,7 @@
 ファイル名は `runs.toml`。カレントディレクトリから親へ向かって探す。見つかったファイルのあるディレクトリを「プロジェクトルート」と呼ぶ。
 
 ```toml
-# 省略可。コマンドを渡すシェル。既定は Unix が ["sh", "-c"]、Windows が ["cmd", "/C"]
+# 省略可。コマンドを渡すシェル。既定は Unix が ["sh", "-c"]、Windows が ["cmd", "/S", "/C"]
 shell = ["pwsh", "-NoProfile", "-Command"]
 
 [[command]]
@@ -91,8 +91,11 @@ cwd = "web"
 ```
 
 - `command` は利用者自身が書く文字列で、シェルの最後の引数としてそのまま渡す。利用者の入力を文字列に連結することはない
-- Windows でシェルが `cmd` のときは `CommandExt::raw_arg` で渡す（std は MSVC の規則で `"` を `\"` にエスケープするが、`cmd` はそれを解釈しないため、
-  通常の `arg` では `echo "a b"` が `\"a b\"` になる）。`pwsh` など他のシェルは `CommandLineToArgvW` の規則で読むので通常の `arg` でよい
+- Windows でシェルが `cmd`（`cmd.exe`・フルパスも含む）のときは、コマンド全体を `"` で包んで `CommandExt::raw_arg` で渡す。
+  理由は 2 つ: std は MSVC の規則で `"` を `\"` にエスケープするが `cmd` はそれを解釈しない（通常の `arg` では `echo "a b"` が `\"a b\"` になる）。
+  `cmd /C` は引用符が 3 つ以上あると先頭と末尾の `"` を外すので、`"C:\Program Files\x.exe" "a b"` のようなコマンドが壊れる。
+  既定の `/S` は「先頭と末尾の `"` だけを外す」指定で、包んだ `"` がそこで外れて中身がそのまま届く。
+  `pwsh` など他のシェルは `CommandLineToArgvW` の規則で読むので通常の `arg` でよい
   （`rust-safety` 6 章が禁じるのは「入力の連結」。設定ファイルは利用者が自分の環境のために書く信頼できる入力とする。懸念点 1）
 - `shell` は配列で、`Command::new(shell[0]).args(&shell[1..]).arg(command)` として使う。空配列はエラー
 - 環境変数の指定（`env`）はこの課題では入れない。必要になったら追加する
@@ -197,7 +200,7 @@ runner.stop_all_and_wait(2 秒)   // ガードの drop（端末の復元）よ�
 停止（`rust-safety` 5 章の `unsafe` 禁止のため、`libc` の直接呼び出しは使わない。懸念点 2）:
 
 - Unix: `kill -s TERM -- -<pgid>` を `Command` で実行（引数は分けて渡す）。2 秒後に、シェルが終わっていても `kill -s KILL -- -<pgid>` を送る
-  （シェルだけが TERM で終わり、TERM を無視する孫が残ることがある。グループの誰かが生きている間、その pgid は再利用されない）
+  （シェルだけが TERM で終わり、TERM を無視する孫が残ることがある。グループの誰かが生きている間、その pgid は再利用されない。全員が先に終わっていた場合は、2 秒の間に同じ pid が別のグループの先頭に再利用される確率がごく低いながら残る）
 - Windows: `taskkill /T /F /PID <pid>` を `Command` で実行（プロセスツリーごと強制終了。穏やかな停止は無い）
 - `kill` / `taskkill` の stdout / stderr は `Stdio::null()` で捨てる（TUI 実行中に端末へ流れると画面が崩れる）
 - `kill` / `taskkill` が失敗したら（実行ファイルが無い、非ゼロ終了）、最終手段として `Child::kill`（直接の子だけ）を呼び、
@@ -284,9 +287,9 @@ runner.stop_all_and_wait(2 秒)   // ガードの drop（端末の復元）よ�
 
 ## 懸念点（1〜2 は 2026-10-06 にユーザーが判断済み）
 
-1. **コマンドはシェル経由で実行する** → 決定: シェル経由。Windows の既定は `cmd /C`。パイプ・リダイレクト・環境変数の展開が使え、利用者が普段打つ文字列をそのまま書ける。
+1. **コマンドはシェル経由で実行する** → 決定: シェル経由。Windows の既定は `cmd /S /C`。パイプ・リダイレクト・環境変数の展開が使え、利用者が普段打つ文字列をそのまま書ける。
    設定ファイルは利用者自身が書くので、シェルに渡すこと自体は問題にしない。代替は `args = ["cargo", "test"]` の配列（安全だがパイプが書けない）。
-   Windows の既定を `cmd /C` にしたが、普段 PowerShell なら `shell = ["pwsh", "-NoProfile", "-Command"]` を設定で指定する（既定を PowerShell にする案もある）
+   Windows の既定を `cmd /S /C` にしたが、普段 PowerShell なら `shell = ["pwsh", "-NoProfile", "-Command"]` を設定で指定する（既定を PowerShell にする案もある）
 2. **停止に外部コマンド（`kill` / `taskkill`）を使う** → 決定: 外部コマンド。`unsafe` 禁止のため `libc::killpg` や Windows の Job Object を使わない。
    `kill` は POSIX 標準、`taskkill` は Windows 標準なので、無い環境は想定しない（`Command::new("kill")` はシェルの組み込みではなく実行ファイルを探すので、
    procps の無いコンテナでは失敗しうる）。失敗したら `Child::kill` で直接の子だけ止め、`StopFailed` で出力欄に理由を出す。

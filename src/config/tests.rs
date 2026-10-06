@@ -69,7 +69,7 @@ fn default_shell_per_os() {
     let config = parse_ok(MINIMAL);
 
     if cfg!(windows) {
-        assert_eq!(config.shell, ["cmd", "/C"]);
+        assert_eq!(config.shell, ["cmd", "/S", "/C"]);
     } else {
         assert_eq!(config.shell, ["sh", "-c"]);
     }

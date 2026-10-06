@@ -217,9 +217,9 @@ impl App {
                 }
             }
             RunnerEvent::StopFailed { id, message } => {
-                // プロセスは動いたままなので状態は変えず、理由だけ出力欄に出す
+                // 状態は変えず、理由だけ出力欄に出す。stop_requested は残す（最終手段の Child::kill で
+                // 終わったとき、終了コードではなく「停止」と見せるため）
                 if let Some(command) = self.commands.get_mut(id) {
-                    command.stop_requested = false;
                     command
                         .output
                         .push_raw(format!("runs: failed to stop: {message}").as_bytes());

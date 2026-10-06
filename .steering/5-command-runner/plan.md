@@ -51,6 +51,11 @@ issue #5 で最初の機能を作る: プロジェクト直下の `runs.toml` �
 - Nit への対応: ESC + 中間バイト（`ESC ( B`）と DCS / APC / PM / SOS を `sanitize` で捨てる／コマンド名も `sanitize`／上限到達で先頭が捨てられたら `Scroll::At` を補正／
   panic 時に子プロセスを放置しないよう `Runner` に `Drop`。見送り: 起動ごとの世代番号（`Exited` 後に遅れて届く行が再実行の出力に混ざりうる。発生条件が狭い）、
   1 行の長さの上限、`deny_unknown_fields`、名前の重複判定の trim
+- **reviewer（2 回目）**: Important 1（`raw_arg` だけでは `cmd /C` の「引用符が 3 つ以上なら先頭と末尾の `"` を外す」規則に引っかかり、
+  `"C:\Program Files\x.exe" "a b"` が起動しない）→ 既定を `cmd /S /C` にし、コマンド全体を `"` で包んで渡す。
+  テスト `quoted_program_path_works_with_cmd`・`full_path_to_cmd_is_recognized`（Windows のみ）。
+  Nit: `StopFailed` で `stop_requested` を戻さない／`stop_all_and_wait_kills_grandchildren` を TERM を無視する孫に変更／`pgrep` が無ければテストを panic させる／
+  spec の pgid 再利用の注記を正確にした
 - **Windows Terminal での実機確認**: 2026-10-06 にユーザーが手動で 6 項目を確認し、すべて期待どおりだった（レビュー対応前のビルド。対応後は WSL の疑似端末で再確認）
   （一覧とキーの案内／`test` の実行・`exit 0`・`PageUp` / `End`／`ping -t` と `test` の同時実行、`s` で `stopped`、`tasklist` に残存なし／
   実行中のまま `q` で 2 秒以内に終了、終了コード 0、残存なし／`runs.toml` の無い場所で `not found` と例、終了コード 1／後片付け）
@@ -123,7 +128,7 @@ issue #5 で最初の機能を作る: プロジェクト直下の `runs.toml` �
 - **既存の挙動を変えない**: `--version` / `--help` / 非 TTY の層 3 テスト 5 件と `app` の既存テストはそのまま通す。`pty-check.sh` も既存ケースのまま
   （リポジトリ直下に `runs.toml` を置くので起動できる）
 - **テストの一時ディレクトリ**: `tests/cli.rs` と `config` の探索テストは `temp_dir()` 配下に一意なディレクトリを作り、終わりに消す。テスト間で共有しない
-- **`cmd /C` の引用符**: 利用者が書く `command` に引用符が含まれると `cmd` の解釈が直感と違うことがある。この課題では文書化のみ（spec の懸念点 1）
+- **`cmd` の引用符**: std の `arg` は MSVC 流に `\"` とエスケープし、`cmd` はそれを解釈しない。さらに `cmd /C` は引用符が 3 つ以上あると先頭と末尾の `"` を外す。`raw_arg` で全体を `"` に包み、`/S` と組み合わせて渡す（レビューで判明。「実装中に分かったこと」）
 
 ## 証明（Proof）
 

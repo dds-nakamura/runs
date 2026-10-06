@@ -311,6 +311,16 @@ fn stop_failed_is_not_sent_for_finished_process() {
     );
 }
 
+/// `pgrep -f` で該当するプロセスがいるか。pgrep が無ければ、何も確かめずに通さないよう panic する
+#[cfg(unix)]
+fn process_alive(pattern: &str) -> bool {
+    let output = std::process::Command::new("pgrep")
+        .args(["-f", pattern])
+        .output()
+        .expect("pgrep を実行できる（procps が必要）");
+    output.status.success()
+}
+
 /// シェルが TERM で先に終わっても、TERM を無視する孫プロセスが猶予の後に KILL されること。
 #[cfg(unix)]
 #[test]
@@ -333,12 +343,7 @@ fn grandchild_ignoring_term_is_killed_after_grace() {
     // 猶予（2 秒）の後に KILL が届き、sleep が消える
     let deadline = Instant::now() + Duration::from_secs(6);
     loop {
-        let alive = std::process::Command::new("pgrep")
-            .args(["-f", "sleep 31"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if !alive {
+        if !process_alive("sleep 31") {
             break;
         }
         assert!(Instant::now() < deadline, "sleep 31 が残っている");
@@ -351,7 +356,8 @@ fn grandchild_ignoring_term_is_killed_after_grace() {
 #[test]
 fn stop_all_and_wait_kills_grandchildren() {
     let (mut runner, rx) = Runner::new(default_shell());
-    runner.start(0, &spec("sleep 32; echo done"));
+    // シェルが TERM で終わっても、TERM を無視する孫が残らないこと（無条件の KILL の証明）
+    runner.start(0, &spec("(trap '' TERM; sleep 32) & wait"));
     match rx.recv_timeout(TIMEOUT) {
         Ok(RunnerEvent::Started { id: 0 }) => {}
         other => panic!("Started のはずが {other:?}"),
@@ -360,10 +366,40 @@ fn stop_all_and_wait_kills_grandchildren() {
 
     runner.stop_all_and_wait(Duration::from_secs(2));
 
-    let alive = std::process::Command::new("pgrep")
-        .args(["-f", "sleep 32"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    assert!(!alive, "sleep 32 が残っている");
+    assert!(!process_alive("sleep 32"), "sleep 32 が残っている");
+}
+
+#[cfg(windows)]
+#[test]
+fn quoted_program_path_works_with_cmd() {
+    let (mut runner, rx) = Runner::new(default_shell());
+
+    // 引用符で囲んだパスで始まり、ほかにも引用符がある（cmd /C の「先頭と末尾の " を外す」規則に引っかかる形）
+    runner.start(0, &spec(r#""C:\Windows\System32\where.exe" "cmd.exe""#));
+    let events = collect_until_done(&rx);
+
+    assert_eq!(exit_code(&events), Some(0));
+    let lines = output_lines(&events);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.to_ascii_lowercase().ends_with("cmd.exe")),
+        "{lines:?}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn full_path_to_cmd_is_recognized() {
+    let (mut runner, rx) = Runner::new(vec![
+        r"C:\Windows\System32\cmd.exe".into(),
+        "/S".into(),
+        "/C".into(),
+    ]);
+
+    runner.start(0, &spec(r#"echo "a b""#));
+    let events = collect_until_done(&rx);
+
+    assert_eq!(exit_code(&events), Some(0));
+    assert_eq!(output_lines(&events), [r#""a b""#]);
 }
