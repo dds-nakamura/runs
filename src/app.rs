@@ -113,7 +113,8 @@ impl App {
                 .commands
                 .iter()
                 .map(|spec| CommandView {
-                    name: spec.name.clone(),
+                    // 設定ファイルの値も外部入力。制御文字を画面に出さない
+                    name: output::sanitize(&spec.name),
                     state: CommandState::Idle,
                     output: OutputBuffer::new(output::DEFAULT_LIMIT),
                     stop_requested: false,
@@ -182,8 +183,18 @@ impl App {
                 }
             }
             RunnerEvent::Output { id, bytes } => {
-                if let Some(command) = self.commands.get_mut(id) {
-                    command.output.push_raw(&bytes);
+                let Some(command) = self.commands.get_mut(id) else {
+                    return;
+                };
+                let dropped_before = command.output.dropped();
+                command.output.push_raw(&bytes);
+                let dropped = command.output.dropped().saturating_sub(dropped_before);
+                // 上限に達して先頭が捨てられたら、遡っている表示位置を同じだけ戻して、見えている行を動かさない
+                if let Scroll::At(first) = self.scroll
+                    && id == self.selected
+                    && dropped > 0
+                {
+                    self.scroll = Scroll::At(first.saturating_sub(dropped));
                 }
             }
             RunnerEvent::Exited { id, status } => {
@@ -203,6 +214,15 @@ impl App {
                     command.state = CommandState::SpawnFailed;
                     command.stop_requested = false;
                     command.output.push_raw(message.as_bytes());
+                }
+            }
+            RunnerEvent::StopFailed { id, message } => {
+                // プロセスは動いたままなので状態は変えず、理由だけ出力欄に出す
+                if let Some(command) = self.commands.get_mut(id) {
+                    command.stop_requested = false;
+                    command
+                        .output
+                        .push_raw(format!("runs: failed to stop: {message}").as_bytes());
                 }
             }
         }

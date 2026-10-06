@@ -38,8 +38,7 @@ impl OutputBuffer {
         self.lines.len()
     }
 
-    /// 上限を超えて捨てた行数（テスト用）。
-    #[cfg(test)]
+    /// 上限を超えて捨てた行数。
     pub fn dropped(&self) -> usize {
         self.dropped
     }
@@ -81,24 +80,32 @@ pub fn sanitize(text: &str) -> String {
             },
             State::Escape => match c {
                 '[' => State::Csi,
-                ']' => State::Osc,
+                // OSC・DCS・APC・PM・SOS は文字列を伴い、BEL か ST（ESC \）で終わる
+                ']' | 'P' | '_' | '^' | 'X' => State::Str,
+                // 中間バイト付き（`ESC ( B` など文字セットの指定）は最終バイトまで続く
+                '\u{20}'..='\u{2f}' => State::EscapeIntermediate,
                 _ => State::Normal,
+            },
+            State::EscapeIntermediate => match c {
+                '\u{30}'..='\u{7e}' => State::Normal,
+                _ => State::EscapeIntermediate,
             },
             // パラメータ（0x30..=0x3F）と中間バイト（0x20..=0x2F）を読み飛ばし、最終バイトで終わる
             State::Csi => match c {
                 '\u{40}'..='\u{7e}' => State::Normal,
                 _ => State::Csi,
             },
-            State::Osc => match c {
+            State::Str => match c {
                 '\u{7}' => State::Normal,
-                '\u{1b}' => State::OscEscape,
-                _ => State::Osc,
+                '\u{1b}' => State::StrEscape,
+                _ => State::Str,
             },
-            // OSC の中の ESC は、次が `\` なら終端（ST）。そうでなければ別のシーケンスの始まりとして読み直す
-            State::OscEscape => match c {
+            // 文字列の中の ESC は、次が `\` なら終端（ST）。そうでなければ別のシーケンスの始まりとして読み直す
+            State::StrEscape => match c {
                 '\\' => State::Normal,
                 '[' => State::Csi,
-                ']' => State::Osc,
+                ']' | 'P' | '_' | '^' | 'X' => State::Str,
+                '\u{20}'..='\u{2f}' => State::EscapeIntermediate,
                 _ => State::Normal,
             },
         };
@@ -110,9 +117,10 @@ pub fn sanitize(text: &str) -> String {
 enum State {
     Normal,
     Escape,
+    EscapeIntermediate,
     Csi,
-    Osc,
-    OscEscape,
+    Str,
+    StrEscape,
 }
 
 #[cfg(test)]

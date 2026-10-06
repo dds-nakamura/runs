@@ -91,6 +91,8 @@ cwd = "web"
 ```
 
 - `command` は利用者自身が書く文字列で、シェルの最後の引数としてそのまま渡す。利用者の入力を文字列に連結することはない
+- Windows でシェルが `cmd` のときは `CommandExt::raw_arg` で渡す（std は MSVC の規則で `"` を `\"` にエスケープするが、`cmd` はそれを解釈しないため、
+  通常の `arg` では `echo "a b"` が `\"a b\"` になる）。`pwsh` など他のシェルは `CommandLineToArgvW` の規則で読むので通常の `arg` でよい
   （`rust-safety` 6 章が禁じるのは「入力の連結」。設定ファイルは利用者が自分の環境のために書く信頼できる入力とする。懸念点 1）
 - `shell` は配列で、`Command::new(shell[0]).args(&shell[1..]).arg(command)` として使う。空配列はエラー
 - 環境変数の指定（`env`）はこの課題では入れない。必要になったら追加する
@@ -194,10 +196,15 @@ runner.stop_all_and_wait(2 秒)   // ガードの drop（端末の復元）よ�
 
 停止（`rust-safety` 5 章の `unsafe` 禁止のため、`libc` の直接呼び出しは使わない。懸念点 2）:
 
-- Unix: `kill -s TERM -- -<pgid>` を `Command` で実行（引数は分けて渡す）。2 秒待っても `Exited` が来なければ `kill -s KILL -- -<pgid>`
+- Unix: `kill -s TERM -- -<pgid>` を `Command` で実行（引数は分けて渡す）。2 秒後に、シェルが終わっていても `kill -s KILL -- -<pgid>` を送る
+  （シェルだけが TERM で終わり、TERM を無視する孫が残ることがある。グループの誰かが生きている間、その pgid は再利用されない）
 - Windows: `taskkill /T /F /PID <pid>` を `Command` で実行（プロセスツリーごと強制終了。穏やかな停止は無い）
 - `kill` / `taskkill` の stdout / stderr は `Stdio::null()` で捨てる（TUI 実行中に端末へ流れると画面が崩れる）
-- `stop_all_and_wait(grace)`: 全部に停止を送り、`grace` の間 `Exited` を待ち、残ったものに強制終了を送って `wait` する
+- `kill` / `taskkill` が失敗したら（実行ファイルが無い、非ゼロ終了）、最終手段として `Child::kill`（直接の子だけ）を呼び、
+  `RunnerEvent::StopFailed` で理由を出力欄に出す。状態は `Running` のまま
+- 終了待ちはブロックする `wait` でなく `try_wait` のポーリング（50 ms）にして、`Runner` 側が `Child::kill` を使えるようにする
+- `stop_all_and_wait(grace)`: 全部に停止を送り、`grace` の間終了を待ち、残ったものに強制終了（Unix はグループへ無条件に KILL）と `Child::kill` を送り、
+  さらに 1 秒待つ。それでも終わらないものは諦めて戻る（端末の復元を待たせない。無限に待たない）
 
 出力の取り込み（`app` 側）: `Output { bytes }` を `String::from_utf8_lossy` → `output::sanitize` → `OutputBuffer::push`
 
@@ -281,7 +288,8 @@ runner.stop_all_and_wait(2 秒)   // ガードの drop（端末の復元）よ�
    設定ファイルは利用者自身が書くので、シェルに渡すこと自体は問題にしない。代替は `args = ["cargo", "test"]` の配列（安全だがパイプが書けない）。
    Windows の既定を `cmd /C` にしたが、普段 PowerShell なら `shell = ["pwsh", "-NoProfile", "-Command"]` を設定で指定する（既定を PowerShell にする案もある）
 2. **停止に外部コマンド（`kill` / `taskkill`）を使う** → 決定: 外部コマンド。`unsafe` 禁止のため `libc::killpg` や Windows の Job Object を使わない。
-   `kill` は POSIX 標準、`taskkill` は Windows 標準なので、無い環境は想定しない。無かった場合は `SpawnFailed` と同じく出力欄に理由を出す。
+   `kill` は POSIX 標準、`taskkill` は Windows 標準なので、無い環境は想定しない（`Command::new("kill")` はシェルの組み込みではなく実行ファイルを探すので、
+   procps の無いコンテナでは失敗しうる）。失敗したら `Child::kill` で直接の子だけ止め、`StopFailed` で出力欄に理由を出す。
    安全なラッパー（`nix` クレート）を入れる案もあるが、依存が大きい
 3. **Windows の停止は最初から強制終了**。Windows には SIGTERM に相当する穏やかな停止の仕組みが無い（Ctrl+C イベントの送信は同じコンソールのプロセスにしか効かない）。
    停止されたコマンドが後始末（一時ファイルの削除など）をできない。利用者が自分で使う範囲では許容する

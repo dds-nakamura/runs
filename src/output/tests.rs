@@ -24,6 +24,20 @@ fn strips_lone_escape() {
 }
 
 #[test]
+fn strips_escape_with_intermediate_bytes() {
+    // 文字セットの指定（tput sgr0 などが出す）。`B` を残さない
+    assert_eq!(sanitize("a\u{1b}(Bb"), "ab");
+    assert_eq!(sanitize("a\u{1b}#8b"), "ab");
+}
+
+#[test]
+fn strips_dcs_apc_pm_sos_strings() {
+    assert_eq!(sanitize("a\u{1b}Pq#0;2;0;0;0#0!30~\u{1b}\\b"), "ab");
+    assert_eq!(sanitize("a\u{1b}_payload\u{7}b"), "ab");
+    assert_eq!(sanitize("a\u{1b}^x\u{1b}\\b\u{1b}Xy\u{1b}\\c"), "abc");
+}
+
+#[test]
 fn replaces_control_chars() {
     // C0・DEL・C1 は '?' にする
     assert_eq!(sanitize("a\u{1}b\u{7f}c\u{9b}d"), "a?b?c?d");

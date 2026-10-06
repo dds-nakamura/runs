@@ -478,3 +478,49 @@ fn zero_height_does_not_panic() {
 
     assert_eq!(app.visible_range().len(), 0);
 }
+
+#[test]
+fn stop_failed_keeps_running_and_shows_reason() {
+    let mut app = app();
+    app.apply(Action::Run);
+    app.apply(Action::Stop);
+
+    app.on_runner_event(RunnerEvent::StopFailed {
+        id: 0,
+        message: "failed to run kill: not found".to_owned(),
+    });
+
+    assert_eq!(app.commands()[0].state(), CommandState::Running);
+    assert_eq!(
+        selected_lines(&app),
+        ["runs: failed to stop: failed to run kill: not found"]
+    );
+}
+
+#[test]
+fn command_names_are_sanitized() {
+    let app = App::new("t", &config(&["evil\u{1b}]0;x\u{7}name"]));
+
+    assert_eq!(app.commands()[0].name(), "evilname");
+}
+
+#[test]
+fn scroll_position_follows_dropped_lines() {
+    let mut app = app_with_lines(crate::output::DEFAULT_LIMIT);
+    app.apply(Action::PageUp);
+    app.apply(Action::PageUp);
+    let Scroll::At(first) = app.scroll() else {
+        panic!("遡っているはず");
+    };
+    let visible: Vec<String> = selected_lines(&app)[app.visible_range()]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+
+    // 上限に達した後の新しい行で先頭が捨てられても、見えている行は変わらない
+    app.on_runner_event(output(0, "overflow 1"));
+    app.on_runner_event(output(0, "overflow 2"));
+
+    assert_eq!(app.scroll(), Scroll::At(first - 2));
+    assert_eq!(selected_lines(&app)[app.visible_range()].to_vec(), visible);
+}

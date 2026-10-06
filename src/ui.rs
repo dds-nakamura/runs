@@ -57,9 +57,10 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &App) {
         .enumerate()
         .map(|(index, command)| {
             let mark = if index == app.selected() { "> " } else { "  " };
+            // `{:<w$}` は文字数で埋めるので、全角を含む名前は表示幅で埋める
+            let name = pad_to_width(command.name(), name_width);
             Line::raw(format!(
-                "{mark}{:<name_width$} {:<STATUS_WIDTH$}",
-                command.name(),
+                "{mark}{name} {:<STATUS_WIDTH$}",
                 status_label(command)
             ))
         })
@@ -90,6 +91,12 @@ fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(title_width)]).areas(area);
     frame.render_widget(Line::raw(HELP), help);
     frame.render_widget(title, title_area);
+}
+
+/// 表示幅が `width` になるまで右に空白を足す。
+fn pad_to_width(text: &str, width: usize) -> String {
+    let padding = width.saturating_sub(Line::raw(text).width());
+    format!("{text}{}", " ".repeat(padding))
 }
 
 fn name_width(app: &App) -> usize {

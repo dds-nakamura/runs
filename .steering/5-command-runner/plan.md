@@ -39,7 +39,19 @@ issue #5 で最初の機能を作る: プロジェクト直下の `runs.toml` �
   無期限に待たないのは、出力パイプを握ったまま残る孫プロセス（`foo &`）がいるとパイプが閉じず、終了が永遠に通知されなくなるため。
   遅れた行は `Exited` の後でも出力欄に追加される。修正後は Windows 3 回・WSL 8 回とも通過
 - 層 1 の `app` は Windows で 30 件、Unix で 31 件（`signal_exit_is_stopped` の分）
-- **Windows Terminal での実機確認**: 2026-10-06 にユーザーが手動で 6 項目を確認し、すべて期待どおりだった
+- **reviewer（1 回目）の Important 5 件への対応**（いずれもコードを直した。spec.md の該当箇所も更新）
+  1. Windows の `cmd /C` で `"` を含む `command` が壊れる（std が MSVC 流に `\"` とエスケープし、cmd が解釈しない）→ シェルが `cmd` のときは `raw_arg` でそのまま渡す。
+     テスト `quotes_in_command_reach_the_shell_intact`
+  2. Unix でシェルが TERM で先に終わると、TERM を無視する孫に KILL が届かない → 猶予の後はシェルの終了を見ずにプロセスグループへ KILL。
+     テスト `grandchild_ignoring_term_is_killed_after_grace`・`stop_all_and_wait_kills_grandchildren`（Unix のみ）
+  3. `kill` / `taskkill` が失敗すると `stop_all_and_wait` が `join` で固まり端末も戻らない → 終了待ちを `try_wait` のポーリングにして `Child::kill` を最終手段に使えるようにし、
+     待ちに期限（猶予 + 1 秒）を付けて必ず戻る。失敗は `RunnerEvent::StopFailed` で出力欄に出す。テスト `stop_failed_keeps_running_and_shows_reason`（app）
+  4. 全角の名前で状態の列がずれる（`{:<w$}` は文字数で埋める）→ 表示幅で埋める `pad_to_width`。テスト `pads_fullwidth_names_by_display_width`
+  5. 設定エラーの表示に `runs.toml` の生の制御文字が出る → `main::report` が行ごとに `sanitize` を通す。テスト `config_error_output_has_no_control_chars`
+- Nit への対応: ESC + 中間バイト（`ESC ( B`）と DCS / APC / PM / SOS を `sanitize` で捨てる／コマンド名も `sanitize`／上限到達で先頭が捨てられたら `Scroll::At` を補正／
+  panic 時に子プロセスを放置しないよう `Runner` に `Drop`。見送り: 起動ごとの世代番号（`Exited` 後に遅れて届く行が再実行の出力に混ざりうる。発生条件が狭い）、
+  1 行の長さの上限、`deny_unknown_fields`、名前の重複判定の trim
+- **Windows Terminal での実機確認**: 2026-10-06 にユーザーが手動で 6 項目を確認し、すべて期待どおりだった（レビュー対応前のビルド。対応後は WSL の疑似端末で再確認）
   （一覧とキーの案内／`test` の実行・`exit 0`・`PageUp` / `End`／`ping -t` と `test` の同時実行、`s` で `stopped`、`tasklist` に残存なし／
   実行中のまま `q` で 2 秒以内に終了、終了コード 0、残存なし／`runs.toml` の無い場所で `not found` と例、終了コード 1／後片付け）
 

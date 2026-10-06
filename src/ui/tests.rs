@@ -202,3 +202,18 @@ fn long_names_and_lines_are_truncated() {
         "Up/Down select  Entt",
     ]);
 }
+
+#[test]
+fn pads_fullwidth_names_by_display_width() {
+    let mut app = App::new("t", &config(&["テスト", "b"]));
+    app.apply(Action::SelectNext);
+    app.apply(Action::Run);
+    let terminal = render(&mut app, 45, 3);
+
+    // 名前の表示幅は 6。一覧は 2 + 6 + 1 + 8 = 17 桁（45 桁の 40% = 18 に収まる）で、状態の列が揃う
+    terminal.backend().assert_buffer_lines([
+        "  テスト idle                                ",
+        "> b      running                             ",
+        "Up/Down select  Enter run  s stop  PgUp/PgDnt",
+    ]);
+}

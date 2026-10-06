@@ -1,13 +1,14 @@
 //! 子プロセスの起動・出力の読み取り・停止。プロセスに触るのはこのモジュールだけ。
 //!
-//! 停止は外部コマンド（Unix: `kill`、Windows: `taskkill`）で行う。`libc` や Job Object は `unsafe` が要るため使わない。
+//! 停止は外部コマンド（Unix: `kill`、Windows: `taskkill`）で木ごと行う。`libc` や Job Object は `unsafe` が要るため使わない。
+//! 外部コマンドが使えないときの最終手段は `Child::kill`（直接の子だけ）。
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -34,17 +35,26 @@ pub enum RunnerEvent {
         id: CommandId,
         message: String,
     },
+    /// 停止の手段（`kill` / `taskkill`）が失敗した。プロセスは動いたまま
+    StopFailed {
+        id: CommandId,
+        message: String,
+    },
 }
 
 /// 穏やかな停止から強制終了までの猶予（Unix）。
 const STOP_GRACE: Duration = Duration::from_secs(2);
+/// 強制終了の後、終了待ちスレッドが終わるのを待つ上限。これを過ぎたら諦めて戻る
+const FORCE_GRACE: Duration = Duration::from_secs(1);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// 子プロセスの終了後、出力の読み取りが終わるのを待つ上限。
 const READER_GRACE: Duration = Duration::from_millis(500);
 
 struct RunningProcess {
     pid: u32,
-    /// 終了待ちスレッドが `wait` を終えたら true。pid の再利用で無関係なプロセスを止めないための目印
+    /// 終了待ちスレッドと共有する。最終手段の `Child::kill` に使う
+    child: Arc<Mutex<Child>>,
+    /// 終了待ちスレッドが終了を確認したら true
     finished: Arc<AtomicBool>,
     waiter: JoinHandle<()>,
 }
@@ -85,47 +95,67 @@ impl Runner {
     }
 
     /// 穏やかな停止を要求する。実際の終了は `Exited` で届く。
-    /// Unix は TERM を送り、猶予の後も生きていれば KILL。Windows は最初から強制終了
+    /// Unix は TERM を送り、猶予の後にプロセスグループへ KILL。Windows は最初から強制終了
     pub fn stop(&mut self, id: CommandId) {
         self.reap();
         let Some(process) = self.running.get(&id) else {
             return;
         };
-        terminate(process.pid);
+        if let Err(message) = terminate(process.pid) {
+            // 外部コマンドが使えない。直接の子だけでも止める（孫は残る）
+            let fallback = lock(&process.child).kill();
+            if !process.is_finished() {
+                self.send(RunnerEvent::StopFailed {
+                    id,
+                    message: match fallback {
+                        Ok(()) => format!("{message}; killed the direct child only"),
+                        Err(err) => format!("{message}; direct kill also failed: {err}"),
+                    },
+                });
+            }
+        }
         if cfg!(unix) {
+            // シェルだけが TERM で終わり、TERM を無視する孫が残ることがある。
+            // 猶予の後は、シェルの終了を見ずにグループへ KILL を送る（グループの誰かが生きている間、その pgid は再利用されない）
             let pid = process.pid;
-            let finished = Arc::clone(&process.finished);
             thread::spawn(move || {
                 thread::sleep(STOP_GRACE);
-                if !finished.load(Ordering::Acquire) {
-                    force_kill(pid);
-                }
+                let _ = force_kill(pid);
             });
         }
     }
 
-    /// 全部に停止を送り、猶予の後に残りを強制終了して、終わるまで待つ（TUI の終了時用）
+    /// 全部に停止を送り、猶予の後に残りを強制終了して、終わるまで待つ（TUI の終了時用）。
+    /// 止められないものがあっても `grace + FORCE_GRACE` ほどで必ず戻る
     pub fn stop_all_and_wait(&mut self, grace: Duration) {
         self.reap();
         for process in self.running.values() {
-            terminate(process.pid);
-        }
-        let deadline = Instant::now() + grace;
-        while Instant::now() < deadline && self.running.values().any(|p| !p.is_finished()) {
-            thread::sleep(POLL_INTERVAL);
-        }
-        for process in self.running.values() {
-            if !process.is_finished() {
-                force_kill(process.pid);
+            if terminate(process.pid).is_err() {
+                let _ = lock(&process.child).kill();
             }
         }
+        self.wait_all(grace);
+
+        for process in self.running.values() {
+            // Unix はシェルが終わっていても孫が残りうるので、グループへ無条件に KILL
+            if cfg!(unix) || !process.is_finished() {
+                let _ = force_kill(process.pid);
+            }
+            if !process.is_finished() {
+                let _ = lock(&process.child).kill();
+            }
+        }
+        self.wait_all(FORCE_GRACE);
+
         for (_, process) in self.running.drain() {
-            // 終了待ちスレッドは wait が返れば終わる。panic していても復元することは無いので結果は見ない
-            let _ = process.waiter.join();
+            if process.is_finished() {
+                // 終了を確認済みなので join はすぐ返る。panic していても復元することは無いので結果は見ない
+                let _ = process.waiter.join();
+            }
+            // 終わらなかったものは諦める（スレッドはプロセスの終了とともに消える）。端末の復元を待たせない
         }
     }
 
-    /// テスト用。本体は `start` / `stop` が内部で判定する
     #[cfg(test)]
     pub fn is_running(&self, id: CommandId) -> bool {
         self.running.get(&id).is_some_and(|p| !p.is_finished())
@@ -144,11 +174,11 @@ impl Runner {
         let mut command = Command::new(program);
         command
             .args(args)
-            .arg(&spec.command)
             .current_dir(&spec.cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        push_command_arg(&mut command, program, &spec.command);
         #[cfg(unix)]
         {
             // シェルが起こした孫プロセスごと止められるよう、新しいプロセスグループにする（pgid = pid）
@@ -178,12 +208,22 @@ impl Runner {
             .flatten()
             .map(|stream| spawn_reader(id, stream, self.tx.clone()))
             .collect();
+        let child = Arc::new(Mutex::new(child));
         let finished = Arc::new(AtomicBool::new(false));
         let waiter = {
             let tx = self.tx.clone();
+            let child = Arc::clone(&child);
             let finished = Arc::clone(&finished);
             thread::spawn(move || {
-                let result = child.wait();
+                // ブロックする wait ではなくポーリングにして、Runner 側が Child::kill を使えるようにする
+                let result = loop {
+                    match lock(&child).try_wait() {
+                        Ok(Some(status)) => break Ok(status),
+                        Ok(None) => {}
+                        Err(err) => break Err(err),
+                    }
+                    thread::sleep(POLL_INTERVAL);
+                };
                 // 最後の行が Exited より後に届かないよう、読み取りスレッドの終了を待つ。
                 // ただし無期限には待たない: 出力パイプを握ったまま残る孫プロセス（`foo &` など）がいると
                 // パイプが閉じず、終了が永遠に通知されなくなる。遅れた行は Exited の後に届いても表示される
@@ -206,8 +246,17 @@ impl Runner {
         };
         RunningProcess {
             pid,
+            child,
             finished,
             waiter,
+        }
+    }
+
+    /// 全部が終わるか期限が来るまで待つ。
+    fn wait_all(&self, limit: Duration) {
+        let deadline = Instant::now() + limit;
+        while Instant::now() < deadline && self.running.values().any(|p| !p.is_finished()) {
+            thread::sleep(POLL_INTERVAL);
         }
     }
 
@@ -222,10 +271,49 @@ impl Runner {
     }
 }
 
+impl Drop for Runner {
+    /// panic などで `stop_all_and_wait` を通らずに終わるときも、子プロセスを放置しない（待ちはしない）。
+    fn drop(&mut self) {
+        for process in self.running.values() {
+            if !process.is_finished() && terminate(process.pid).is_err() {
+                let _ = lock(&process.child).kill();
+            }
+        }
+    }
+}
+
 impl RunningProcess {
     fn is_finished(&self) -> bool {
         self.finished.load(Ordering::Acquire)
     }
+}
+
+/// poison（他スレッドの panic）でも中身は使える。復元すべき不変条件は無い
+fn lock(child: &Mutex<Child>) -> MutexGuard<'_, Child> {
+    child.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// 利用者が書いたコマンド文字列をシェルに渡す。
+///
+/// Windows の `cmd` は、std が MSVC の規則で付ける `\"` のエスケープを解釈しないので、そのまま渡す。
+/// それ以外（`sh`、`pwsh` など）は通常の引数として渡す。
+#[cfg(windows)]
+fn push_command_arg(command: &mut Command, program: &str, text: &str) {
+    use std::os::windows::process::CommandExt;
+    let name = std::path::Path::new(program)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(program);
+    if name.eq_ignore_ascii_case("cmd") {
+        command.raw_arg(text);
+    } else {
+        command.arg(text);
+    }
+}
+
+#[cfg(not(windows))]
+fn push_command_arg(command: &mut Command, _program: &str, text: &str) {
+    command.arg(text);
 }
 
 /// 行ごとに `Output` を送る。パイプが閉じるか受信側が終わるまで。
@@ -263,29 +351,35 @@ fn spawn_reader(
 }
 
 /// 穏やかに止める。Unix はプロセスグループへ TERM、Windows は木ごと強制終了（穏やかな手段が無い）。
-fn terminate(pid: u32) {
+fn terminate(pid: u32) -> Result<(), String> {
     #[cfg(unix)]
-    run_quietly("kill", &["-s", "TERM", "--", &format!("-{pid}")]);
+    return run_quietly("kill", &["-s", "TERM", "--", &format!("-{pid}")]);
     #[cfg(windows)]
-    run_quietly("taskkill", &["/T", "/F", "/PID", &pid.to_string()]);
+    return run_quietly("taskkill", &["/T", "/F", "/PID", &pid.to_string()]);
 }
 
 /// 強制終了する。
-fn force_kill(pid: u32) {
+fn force_kill(pid: u32) -> Result<(), String> {
     #[cfg(unix)]
-    run_quietly("kill", &["-s", "KILL", "--", &format!("-{pid}")]);
+    return run_quietly("kill", &["-s", "KILL", "--", &format!("-{pid}")]);
     #[cfg(windows)]
-    run_quietly("taskkill", &["/T", "/F", "/PID", &pid.to_string()]);
+    return run_quietly("taskkill", &["/T", "/F", "/PID", &pid.to_string()]);
 }
 
-/// 外部コマンドを、出力を捨てて実行する（TUI 実行中に端末へ流さない）。失敗しても伝える先が無いので無視する。
-fn run_quietly(program: &str, args: &[&str]) {
-    let _ = Command::new(program)
+/// 外部コマンドを、出力を捨てて実行する（TUI 実行中に端末へ流さない）。
+fn run_quietly(program: &str, args: &[&str]) -> Result<(), String> {
+    let status = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status();
+        .status()
+        .map_err(|err| format!("failed to run {program}: {err}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{program} exited with {status}"))
+    }
 }
 
 #[cfg(test)]

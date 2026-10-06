@@ -145,3 +145,24 @@ fn no_args_without_tty_exits_1() {
     assert!(stderr.contains("must be a terminal"), "{stderr}");
     assert!(!stderr.contains('\u{1b}'), "{stderr:?}");
 }
+
+#[test]
+fn config_error_output_has_no_control_chars() {
+    let temp = TempDir::new("escape-in-config");
+    // コメントに生の ESC と BEL を入れた上で構文エラーにし、エラーがその行を引用しても端末に届かないことを確かめる
+    fs::write(
+        temp.0.join("runs.toml"),
+        "# \u{1b}]0;PWNED\u{7} \u{1b}[31m\n[[command]\n",
+    )
+    .expect("設定を書ける");
+
+    let output = runs_in(&temp.0, &[]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr(&output);
+    assert!(stderr.contains("runs.toml"), "{stderr}");
+    assert!(
+        !stderr.chars().any(|c| c.is_control() && c != '\n'),
+        "{stderr:?}"
+    );
+}

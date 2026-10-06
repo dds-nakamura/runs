@@ -63,7 +63,13 @@ fn print(text: &str) -> ExitCode {
 }
 
 /// stderr にエラーを出す。`eprintln!` は使わない（`print` と同じ理由）。
+///
+/// メッセージには設定ファイルの引用（toml のエラー）や引数が含まれるので、行ごとに制御文字を除いてから出す。
 fn report(message: &str) {
+    let mut stderr = io::stderr().lock();
     // stderr に書けないときは伝える先が無い。失敗は終了コードで示す
-    let _ = writeln!(io::stderr().lock(), "runs: {message}");
+    let _ = write!(stderr, "runs: ");
+    for line in message.lines() {
+        let _ = writeln!(stderr, "{}", output::sanitize(line));
+    }
 }

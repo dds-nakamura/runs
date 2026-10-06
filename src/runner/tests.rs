@@ -139,7 +139,8 @@ fn events_carry_the_command_id() {
             RunnerEvent::Started { id }
             | RunnerEvent::Output { id, .. }
             | RunnerEvent::Exited { id, .. }
-            | RunnerEvent::SpawnFailed { id, .. } => *id == 7,
+            | RunnerEvent::SpawnFailed { id, .. }
+            | RunnerEvent::StopFailed { id, .. } => *id == 7,
         }),
         "{events:?}"
     );
@@ -278,4 +279,91 @@ fn start_while_running_is_ignored() {
         .filter(|e| matches!(e, RunnerEvent::Started { .. }))
         .count();
     assert_eq!(started, 1);
+}
+
+#[test]
+fn quotes_in_command_reach_the_shell_intact() {
+    let (mut runner, rx) = Runner::new(default_shell());
+
+    // cmd は std の `\"` エスケープを解釈しないので、そのまま渡す必要がある
+    runner.start(0, &spec(r#"echo "a b""#));
+    let events = collect_until_done(&rx);
+
+    assert_eq!(exit_code(&events), Some(0));
+    let lines = output_lines(&events);
+    // sh は引用符を外し、cmd は残す。どちらも a と b の間の空白が保たれ、バックスラッシュは出ない
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("a b"), "{lines:?}");
+    assert!(!lines[0].contains('\\'), "{lines:?}");
+}
+
+#[test]
+fn stop_failed_is_not_sent_for_finished_process() {
+    let (mut runner, rx) = Runner::new(default_shell());
+
+    runner.start(0, &spec("echo hello"));
+    let _ = collect_until_done(&rx);
+    runner.stop(0);
+
+    assert!(
+        rx.try_iter()
+            .all(|e| !matches!(e, RunnerEvent::StopFailed { .. }))
+    );
+}
+
+/// シェルが TERM で先に終わっても、TERM を無視する孫プロセスが猶予の後に KILL されること。
+#[cfg(unix)]
+#[test]
+fn grandchild_ignoring_term_is_killed_after_grace() {
+    let (mut runner, rx) = Runner::new(default_shell());
+    // 31 秒は他のテストの sleep と区別するため
+    runner.start(0, &spec("(trap '' TERM; sleep 31) & wait"));
+    match rx.recv_timeout(TIMEOUT) {
+        Ok(RunnerEvent::Started { id: 0 }) => {}
+        other => panic!("Started のはずが {other:?}"),
+    }
+
+    runner.stop(0);
+    let events = collect_until_done(&rx);
+    assert!(
+        matches!(events.last(), Some(RunnerEvent::Exited { id: 0, .. })),
+        "{events:?}"
+    );
+
+    // 猶予（2 秒）の後に KILL が届き、sleep が消える
+    let deadline = Instant::now() + Duration::from_secs(6);
+    loop {
+        let alive = std::process::Command::new("pgrep")
+            .args(["-f", "sleep 31"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !alive {
+            break;
+        }
+        assert!(Instant::now() < deadline, "sleep 31 が残っている");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// 終了時の全停止でも、シェル経由の孫プロセスが残らないこと。
+#[cfg(unix)]
+#[test]
+fn stop_all_and_wait_kills_grandchildren() {
+    let (mut runner, rx) = Runner::new(default_shell());
+    runner.start(0, &spec("sleep 32; echo done"));
+    match rx.recv_timeout(TIMEOUT) {
+        Ok(RunnerEvent::Started { id: 0 }) => {}
+        other => panic!("Started のはずが {other:?}"),
+    }
+    std::thread::sleep(Duration::from_millis(300));
+
+    runner.stop_all_and_wait(Duration::from_secs(2));
+
+    let alive = std::process::Command::new("pgrep")
+        .args(["-f", "sleep 32"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    assert!(!alive, "sleep 32 が残っている");
 }
