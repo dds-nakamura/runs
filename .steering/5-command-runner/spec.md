@@ -159,7 +159,8 @@ Running ──Run──▶ 変化なし
 - `on_runner_event(Exited)`: `status.code()` が `Some(n)` なら `Exited{code: Some(n)}`。`None`（シグナル）なら `Stopped`。
   自分が停止を要求していた場合は、コードの有無によらず `Stopped`（`stop_requested` フラグを `CommandView` に持つ）
 - `apply(PageUp/PageDown)`: `Follow` から遡ると `At(表示中の先頭行 − ページ分)`。`ScrollToEnd` で `Follow` に戻る。
-  ページの高さは描画側しか知らないので、`App` は「1 ページ = 直近の描画で出力欄に出た行数」を `ui` から受け取る（`set_output_height`）
+  ページの高さは描画側しか知らないので、`ui::layout(area) -> Panes`（純粋関数。`draw` も同じものを使う）で求めた出力欄の高さを、
+  `tui` が各ループで `App::set_output_height` に渡す（`draw(&App)` は不変のまま）
 
 ### イベントループ（`tui::run`）
 
@@ -195,6 +196,7 @@ runner.stop_all_and_wait(2 秒)   // ガードの drop（端末の復元）よ�
 
 - Unix: `kill -s TERM -- -<pgid>` を `Command` で実行（引数は分けて渡す）。2 秒待っても `Exited` が来なければ `kill -s KILL -- -<pgid>`
 - Windows: `taskkill /T /F /PID <pid>` を `Command` で実行（プロセスツリーごと強制終了。穏やかな停止は無い）
+- `kill` / `taskkill` の stdout / stderr は `Stdio::null()` で捨てる（TUI 実行中に端末へ流れると画面が崩れる）
 - `stop_all_and_wait(grace)`: 全部に停止を送り、`grace` の間 `Exited` を待ち、残ったものに強制終了を送って `wait` する
 
 出力の取り込み（`app` 側）: `Output { bytes }` を `String::from_utf8_lossy` → `output::sanitize` → `OutputBuffer::push`
@@ -211,7 +213,7 @@ runner.stop_all_and_wait(2 秒)   // ガードの drop（端末の復元）よ�
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
-- 左ペインの幅は 名前の最大幅 + 状態の幅、ただし画面幅の 40% まで。右ペインが残り。最下行にキーの案内。枠線なし
+- 左ペインの幅は 名前の最大幅 + 状態の幅、ただし画面幅の 40% まで（`u32` で計算する。`u16` の掛け算はあふれる）。右ペインが残り。最下行にキーの案内。枠線なし
 - 状態の表記: `idle` / `running` / `exit N` / `stopped` / `failed`
 - 出力欄: `Scroll::Follow` なら末尾の `height` 行、`At(n)` なら n 行目から `height` 行。長い行は末尾を切る（`Paragraph` の既定）
 
@@ -245,7 +247,7 @@ runner.stop_all_and_wait(2 秒)   // ガードの drop（端末の復元）よ�
 | 1 | `src/config/tests.rs` | 最小の設定／`shell` と `cwd` の省略と指定／`cwd` の相対・絶対／名前の重複→エラー／必須項目の欠落→エラー（行番号を含む）／空の `shell`→エラー／順序の保持／親ディレクトリの探索（一時ディレクトリ） |
 | 1 | `src/output/tests.rs` | CSI（色・カーソル移動）の除去／OSC（タイトル変更、BEL と ST の両方の終端）の除去／単独 ESC／C0・C1 制御文字→`?`／タブ→空白／不正 UTF-8→U+FFFD／上限 10,000 行で古い行から捨てる／`clear` |
 | 1 | `src/app/tests.rs` | 選択の移動と端／`Run` → `Running` + `Effect::Start`／実行中の `Run` は無効／`Stop` は実行中だけ `Effect::Stop`／`Exited(code)`→`Exited`／停止要求後の `Exited`→`Stopped`／`SpawnFailed`／再実行で出力が消える／出力は選択中のものだけ／`PageUp` で `At`、`End` で `Follow`、遡り中は追従しない／`q` と Ctrl+C は #1 のまま |
-| 1 | `src/runner/tests.rs` | 実プロセスで確かめる（コマンドは `env!("CARGO_BIN_EXE_runs")` の `--version` と `--bogus` を使い、OS に依存しない）: 起動→出力→`Exited(0)`／終了コード 2 の伝播／存在しないシェル→`SpawnFailed`／存在しない `cwd`→`SpawnFailed`／長く動くコマンド（Unix: `sleep 30`、Windows: `ping -n 30 127.0.0.1`）を `stop` → `Exited` が届く／`stop_all_and_wait` で全部止まる。各ケースに受信のタイムアウト（10 秒）を付ける |
+| 1 | `src/runner/tests.rs` | 実プロセスで確かめる。シェルは通さず、`Runner::new` の `shell` に実行ファイルそのもの（`env!("CARGO_BIN_EXE_runs")`）を渡し、`command` に `--version` / `--bogus` を書く（`cmd /C` の引用符の癖を避け、OS に依存しない）: 起動→出力→`Exited(0)`／終了コード 2 の伝播／存在しないシェル→`SpawnFailed`／存在しない `cwd`→`SpawnFailed`／長く動くコマンド（Unix: `sleep 30`、Windows: `ping -n 30 127.0.0.1`）を `stop` → `Exited` が届く／`stop_all_and_wait` で全部止まる。各ケースに受信のタイムアウト（10 秒）を付ける |
 | 2 | `src/ui/tests.rs` | 固定の `App` 状態（3 コマンド、各状態）を 80x24 で描いて比較／出力が多いときの末尾表示／`At(n)` の表示／1x1・0x0 で panic しない／長い名前で左ペインが 40% に収まる |
 | 3 | `tests/cli.rs` | `runs.toml` が無いディレクトリで起動（非 TTY）→ 終了コード 1 と「runs.toml」を含むメッセージ／壊れた `runs.toml` → 終了コード 1 と行番号／`--help` に `runs.toml` が出る／既存 5 ケースは変えない |
 | 4 | 実機 | Windows Terminal と WSL: リポジトリ直下の `runs.toml`（`verify` / `test` / `clippy` を登録）で起動→`test` を実行→出力が流れる→`PageUp` で遡る→`End`→終わらないコマンド（`sleep 300` / `ping -t`）を実行したまま別のコマンドを実行→`s` で停止→子プロセスが残っていない（`ps` / `tasklist`）→`q` で全停止して終了→端末が戻る。`pty-check.sh` は既存ケースをそのまま使う（リポジトリ直下に `runs.toml` があるので起動できる） |
