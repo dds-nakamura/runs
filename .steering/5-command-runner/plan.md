@@ -32,7 +32,13 @@ issue #5 で最初の機能を作る: プロジェクト直下の `runs.toml` �
   テスト側で `Output` を読み飛ばすようにした（実装の問題ではない）
 - **実機確認（WSL）は疑似端末のスクリプトで行った**: 既存の `pty-check.sh` 10 ケースに加え、一時的な `runs.toml`（`sleep 300; echo done` / `echo … exit 3` / 存在しない `cwd`）で
   「`s` で停止 → `stopped`、`pgrep -f "sleep 300"` が 0」「実行したまま `q` → 終了コード 0、残存 0」「`exit 3` と stdout / stderr の表示」「`failed` と理由」を確認した。
-  このスクリプトはリポジトリに入れていない（`pty-check.sh` への統合は別途）
+  このスクリプトはリポジトリに入れていない（`pty-check.sh` への統合は別途）。スクリプト内の `LEFTOVER=1` は、スクリプト自身のコマンドラインに
+  `sleep 300` が含まれるのを `pgrep -f` が数えた誤検出（スクリプト外の `pgrep` は 0 件）
+- **verifier が `captures_stdout_and_stderr` の不安定さ（WSL で 7 回中 3 回失敗）を検出**。終了待ちスレッドが `child.wait()` の直後に `Exited` を送るため、
+  読み取りスレッドが最後の行を送る前に `Exited` が届くことがあった。修正: 終了後、読み取りスレッドの終了を最大 500 ms 待ってから `Exited` を送る。
+  無期限に待たないのは、出力パイプを握ったまま残る孫プロセス（`foo &`）がいるとパイプが閉じず、終了が永遠に通知されなくなるため。
+  遅れた行は `Exited` の後でも出力欄に追加される。修正後は Windows 3 回・WSL 8 回とも通過
+- 層 1 の `app` は Windows で 30 件、Unix で 31 件（`signal_exit_is_stopped` の分）
 
 ## 変更するファイル
 

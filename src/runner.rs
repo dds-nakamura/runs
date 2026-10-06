@@ -39,6 +39,8 @@ pub enum RunnerEvent {
 /// 穏やかな停止から強制終了までの猶予（Unix）。
 const STOP_GRACE: Duration = Duration::from_secs(2);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// 子プロセスの終了後、出力の読み取りが終わるのを待つ上限。
+const READER_GRACE: Duration = Duration::from_millis(500);
 
 struct RunningProcess {
     pid: u32,
@@ -161,18 +163,34 @@ impl Runner {
     /// 出力と終了を見張るスレッドを立てる。
     fn watch(&self, id: CommandId, mut child: Child) -> RunningProcess {
         let pid = child.id();
-        if let Some(stdout) = child.stdout.take() {
-            spawn_reader(id, stdout, self.tx.clone());
-        }
-        if let Some(stderr) = child.stderr.take() {
-            spawn_reader(id, stderr, self.tx.clone());
-        }
+        let streams: [Option<Box<dyn Read + Send>>; 2] = [
+            child
+                .stdout
+                .take()
+                .map(|s| Box::new(s) as Box<dyn Read + Send>),
+            child
+                .stderr
+                .take()
+                .map(|s| Box::new(s) as Box<dyn Read + Send>),
+        ];
+        let readers: Vec<JoinHandle<()>> = streams
+            .into_iter()
+            .flatten()
+            .map(|stream| spawn_reader(id, stream, self.tx.clone()))
+            .collect();
         let finished = Arc::new(AtomicBool::new(false));
         let waiter = {
             let tx = self.tx.clone();
             let finished = Arc::clone(&finished);
             thread::spawn(move || {
                 let result = child.wait();
+                // 最後の行が Exited より後に届かないよう、読み取りスレッドの終了を待つ。
+                // ただし無期限には待たない: 出力パイプを握ったまま残る孫プロセス（`foo &` など）がいると
+                // パイプが閉じず、終了が永遠に通知されなくなる。遅れた行は Exited の後に届いても表示される
+                let deadline = Instant::now() + READER_GRACE;
+                while Instant::now() < deadline && readers.iter().any(|r| !r.is_finished()) {
+                    thread::sleep(POLL_INTERVAL);
+                }
                 finished.store(true, Ordering::Release);
                 let event = match result {
                     Ok(status) => RunnerEvent::Exited { id, status },
@@ -211,7 +229,11 @@ impl RunningProcess {
 }
 
 /// 行ごとに `Output` を送る。パイプが閉じるか受信側が終わるまで。
-fn spawn_reader(id: CommandId, stream: impl Read + Send + 'static, tx: Sender<RunnerEvent>) {
+fn spawn_reader(
+    id: CommandId,
+    stream: impl Read + Send + 'static,
+    tx: Sender<RunnerEvent>,
+) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut reader = BufReader::new(stream);
         let mut line = Vec::new();
@@ -237,7 +259,7 @@ fn spawn_reader(id: CommandId, stream: impl Read + Send + 'static, tx: Sender<Ru
                 return;
             }
         }
-    });
+    })
 }
 
 /// 穏やかに止める。Unix はプロセスグループへ TERM、Windows は木ごと強制終了（穏やかな手段が無い）。
