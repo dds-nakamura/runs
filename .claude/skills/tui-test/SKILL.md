@@ -8,7 +8,7 @@ argument-hint: <対象画面・キー操作・機能>
 
 > 採用: ratatui 0.30。crossterm 0.29 は `ratatui::crossterm` 経由で使う（直接依存にしない）。
 > `insta`・`assert_cmd` は未導入（導入は spec で合意してから）。
-> テスト用ヘルパーとモジュール構成はまだ無い。最初の画面を実装するときに決め、この節に追記する。
+> モジュール構成は CLAUDE.md の Architecture。既存のテスト（下の「既存のヘルパー」）の流儀に合わせる。
 
 ## 層と使い分け（下の層ほど速く安定。できるだけ下で証明する）
 
@@ -32,6 +32,20 @@ argument-hint: <対象画面・キー操作・機能>
 
 層 2 の補足: `TestBackend` は `Display` を実装している。`insta` 導入後は `assert_snapshot!(terminal.backend())` に置き換える。
 
+既存のヘルパー（新しいテストはこれを使うか、同じ形で足す）:
+
+| ファイル | ヘルパー | 用途 |
+|---|---|---|
+| `src/app/tests.rs` | `press(code, modifiers)` / `key(code, modifiers, kind)` | キーイベントを作る |
+| `src/app/tests.rs` | `feed(&mut app, &event)` | イベントループと同じ手順（`action_for` → `apply`）で 1 件処理する |
+| `src/ui/tests.rs` | `render(width, height)` | 固定タイトルの `App` を `TestBackend` に描き、`Terminal` を返す |
+| `src/cli/tests.rs` | `parse_args(&[..])` / `error_message(&[..])` | 引数を解釈する／エラーメッセージを取り出す |
+| `tests/cli.rs` | `runs(&[..])` / `stdout(&output)` / `stderr(&output)` | バイナリを端末なし（stdin は null、出力はパイプ）で実行する |
+
+- 描画の期待値は、レイアウトの余りが偶数になるサイズで書く（80x24 など）。余りが奇数のときの丸めを期待値にしない
+- 描画テストにクレートのバージョンなど変わる値を入れない（`App::new` に固定の文字列を渡す）
+- `tests/cli.rs` から内部の関数は呼べない（lib ターゲットが無い）。内部のロジックは `src/<モジュール>/tests.rs` で確かめる
+
 ## 手順
 
 1. 近い既存テストを読み、配置・ヘルパー・命名の流儀に合わせる
@@ -54,5 +68,9 @@ Bash ツールは TTY を持たないので、**Bash で対話 TUI を起動し�
 - 使えない場合: 確認手順（起動コマンド・押すキー・期待する画面）を書いてユーザーに依頼し、結果を待つ。自分で「確認済み」と書かない
 - 一次対象は Windows 11（Windows Terminal）/ Linux / macOS。このうち変更が影響する OS を intent.md の「影響する利用者・環境」から決める
   - Windows: Windows Terminal で確認する（conhost は一次対象外）
-  - Linux: WSL の Ubuntu が候補（Rust ツールチェーンの導入は未確認）
+  - Linux: WSL の Ubuntu 24.04（Rust 導入済み）。`CARGO_TARGET_DIR=$HOME/.cache/runs-target` を指定してビルドする
+    - `bash .claude/scripts/pty-check.sh` が疑似端末（`script` コマンド）で起動し、キー入力・終了コード・
+      エスケープシーケンス・終了後の端末モードを表示する。Bash ツールから実行できる（timeout 付きなのでハングしない）
+    - これは実端末での目視の代わりにはならない。報告では「疑似端末で確認」と「端末エミュレータで目視」を分けて書く
+    - panic 時の復元は、イベントループに `panic!` を一時的に入れたビルドを別の `CARGO_TARGET_DIR` に作って同じスクリプトで確かめ、差分を捨てる
   - macOS: 確認手段が未定。確認できていない OS は報告に「未検証」と明記する

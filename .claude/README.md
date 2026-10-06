@@ -56,6 +56,7 @@ EVECLOUD から独立した Rust ターミナルアプリ向けに作り直し�
 | `settings.json` | permissions・hooks・プラグインの無効化 |
 | `scripts/verify.sh` | 検証コマンド（成功時のみ `VERIFY OK` と `state/verified-at` の更新） |
 | `scripts/test-lock.mjs` | テストロックの操作 |
+| `scripts/pty-check.sh` | 疑似端末（Linux / WSL の `script` コマンド）で起動し、キー入力・終了コード・終了後の端末モードを表示する |
 | `hooks/` | 下記のフック |
 | `agents/` | verifier / reviewer / impact-analyzer |
 | `skills/` | intent / spec / plan / fix-bug / tui-test / rust-safety / pr / pr-feedback |
