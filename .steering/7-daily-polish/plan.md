@@ -28,6 +28,10 @@
 - **疑似端末の確認スクリプト**（scratchpad の `pty-polish.sh`。リポジトリには入れていない）で、残存プロセスは `pgrep -f "^sleep 300$"` で数える。
   `pgrep -x sleep` だとスクリプト自身の `sleep 1` を数えてしまう
 
+- **verifier の指摘**: 証明に書いたテスト名 4 件が実装時に統合されて存在しなかった（`parse_sets_path_under_root` → `parses_minimal_config` に含む、
+  `shows_time_column` と `header_shows_elapsed_while_running` → `renders_list_and_output_at_80x24` に含む、`output_height_excludes_header` → `layout_reserves_rows_for_header_and_help`）。
+  証明の節を実態に直した。層 4 の「`r` 直後の残存」「pid の変化」も疑似端末では見ていなかったので、証明の節を直した
+
 ## 変更するファイル
 
 新規
@@ -98,25 +102,28 @@
 
 - `bash .claude/scripts/verify.sh --all` が `VERIFY OK`（Windows）。WSL で fmt / clippy（`-D warnings`）/ test が通る
 - 層 1 `src/timefmt/tests.rs`: `elapsed_seconds`／`elapsed_minutes`／`elapsed_hours`／`elapsed_days`／`ago_uses_largest_unit`／`never_wider_than_seven_columns`（1 秒〜99 日の代表値）
-- 層 1 `src/config/tests.rs`: 既存 15 件＋`parse_sets_path_under_root`／`load_file_reads_the_given_file`。`load_searches_parent_directories` で `path` も確認
+- 層 1 `src/config/tests.rs`: 既存 15 件＋`load_file_reads_the_given_file`／`load_file_reports_missing_file`。`parses_minimal_config` と `load_searches_parent_directories` で `path` も確認
 - 層 1 `src/runner/tests.rs`: 既存を `RunId` に置き換えて全件＋`set_shell_applies_to_next_start`
 - 層 1 `src/app/tests.rs`: 既存を `RunId` / `Vec<Effect>` に合わせて全件＋`run_allocates_increasing_run_ids`／`events_for_stale_run_are_ignored`／
   `elapsed_while_running`／`ago_and_took_after_exit`／`needs_tick_only_after_first_run`／`enter_on_running_requests_stop_and_restart`／
   `restart_starts_new_run_after_exit`／`second_enter_while_restarting_is_noop`／`stop_cancels_pending_restart`／`stop_failed_keeps_pending_restart`／
   `reload_action_returns_reload_effect`／`replace_config_keeps_same_names`／`replace_config_stops_removed_running`／`replace_config_moves_selection`／
   `replace_config_drops_pending_restart_of_removed`／`notice_is_cleared_by_next_action`／`notice_is_sanitized_to_one_line`
-- 層 2 `src/ui/tests.rs`: 既存を新しい列・見出しに更新して全件＋`shows_time_column`（実行中の経過と終了後の ago）／`header_shows_took_after_exit`／`header_shows_elapsed_while_running`／
-  `header_shows_name_only_when_idle`／`notice_replaces_help_line`／`output_height_excludes_header`
+- 層 2 `src/ui/tests.rs`: 既存を新しい列・見出しに更新して全件（`renders_list_and_output_at_80x24` が時間の列の経過・ago と実行中の見出しを含む）＋
+  `header_shows_took_after_exit`／`header_shows_name_only_when_idle`／`notice_replaces_help_line`／`layout_reserves_rows_for_header_and_help`（出力欄が見出しを除く）
 - 層 3 `tests/cli.rs`: 変更なしで全 9 件が通る
 
 実機（層 4。WSL は私が疑似端末で、Windows Terminal はユーザー）
 
 - 一時的な `runs.toml`（`sleep 300; echo done` / `echo hello` / `sleep 3`）で:
   - `sleep 3` を実行 → 経過が `1s` `2s` `3s` と進み、終了後に見出しに `took 3s`、一覧に `Ns ago` が進む
-  - `sleep 300` を実行したまま `r` → 動き続ける（`pgrep -x sleep` が 1）。通知 `reloaded runs.toml (3 commands)`
-  - `runs.toml` に 1 件足して `r` → 一覧が 4 件になる。壊して `r` → `reload failed:` が出て一覧は 4 件のまま
-  - `sleep 300` に `Enter` → `running` のまま出力が消え、`pgrep -x sleep` が 1 のまま（古いものが死に新しいものが起きる。pid が変わる）
-  - `sleep 300` を設定から消して `r` → 止まって一覧から消える（`pgrep -x sleep` が 0）
+  - `sleep 300` を実行したまま `r` → 一覧で `running` のまま。通知 `reloaded runs.toml (2 commands)`
+  - `runs.toml` に 1 件足して `r` → 一覧に `added` が出る。壊して `r` → `reload failed:` が出る
+  - `sleep 300` に `Enter` → 経過が 0 から数え直す（停止して再実行）
+  - `sleep 300` を設定から消して `r` → 一覧から消える。通知 `reloaded runs.toml (1 command)`
+  - 各ケースの終了後に `pgrep -f "^sleep 300$"` が 0（残存なし）。「`r` の直後にプロセスが残っていること」「再実行で pid が変わること」は
+    疑似端末では直接見ず、層 1（`replace_config_keeps_same_names` が `run` を保つ、`restart_starts_new_run_after_exit` が新しい `run` になる）と
+    Windows Terminal の手動確認（`tasklist` の行数）で確かめる
   - `bash .claude/scripts/pty-check.sh` の既存 10 ケースが #5 と同じ結果
 - Windows Terminal: 上と同じ手順を `ping -t 127.0.0.1` と `timeout /t 3` で。待機中に CPU が 0% 近くであること（タスクマネージャー）
 
