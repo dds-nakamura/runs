@@ -90,13 +90,14 @@ fn event_loop(
     let mut dirty = true;
     let mut last_draw = Instant::now();
     loop {
+        // 入力・通知の処理でも現在時刻を使う（開始・終了時刻の記録）ので、描画の有無によらず毎ループ渡す
         let now = Instant::now();
+        app.set_now(now);
         // 経過時間を見せている間は 1 秒ごとに描き直す。何も実行していなければ入力か通知があるときだけ
         if app.needs_tick() && now.saturating_duration_since(last_draw) >= TICK {
             dirty = true;
         }
         if dirty {
-            app.set_now(now);
             let size = terminal.size().context("failed to get the terminal size")?;
             let panes = ui::layout(Rect::new(0, 0, size.width, size.height), app);
             app.set_output_height(panes.output.height);
@@ -111,13 +112,16 @@ fn event_loop(
         if event::poll(POLL_INTERVAL).context("failed to poll terminal events")? {
             let event = event::read().context("failed to read a terminal event")?;
             if let Some(action) = app::action_for(&event) {
+                // 開始時刻の記録に使うので、poll で待った分だけ古くなった時刻を取り直す
+                app.set_now(Instant::now());
                 let effects = app.apply(action);
                 handle_effects(effects, app, runner, config_path);
             }
             dirty = true;
         }
 
-        // 溜まった分をまとめて取り込み、描画は 1 回にする
+        // 溜まった分をまとめて取り込み、描画は 1 回にする（終了時刻の記録に使うので時刻を取り直す）
+        app.set_now(Instant::now());
         while let Ok(event) = rx.try_recv() {
             let effects = app.on_runner_event(event);
             handle_effects(effects, app, runner, config_path);
@@ -142,11 +146,9 @@ fn handle_effects(effects: Vec<Effect>, app: &mut App, runner: &mut Runner, conf
                     // 消えた実行中のコマンドの Stop が返る
                     let stops = app.replace_config(&new);
                     handle_effects(stops, app, runner, config_path);
-                    app.set_notice(format!(
-                        "reloaded {} ({} commands)",
-                        config::FILE_NAME,
-                        new.commands.len()
-                    ));
+                    let count = new.commands.len();
+                    let noun = if count == 1 { "command" } else { "commands" };
+                    app.set_notice(format!("reloaded {} ({count} {noun})", config::FILE_NAME));
                 }
                 // 設定ファイルの引用が含まれうる。set_notice が 1 行目だけを無害化して保持する
                 Err(err) => app.set_notice(format!("reload failed: {err:#}")),
