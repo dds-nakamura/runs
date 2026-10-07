@@ -141,17 +141,24 @@ fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(title, title_area);
 }
 
-/// 表示幅が `width` に収まるまで末尾の文字を落とす（全角の途中で切らない）。
+/// 表示幅が `width` に収まるまで末尾の文字を落とす（全角の途中で切らない）。切ったときは末尾を `~` にして、
+/// 先頭が同じ名前（`frontend-dev-server` と `frontend-dev-client`）が同じに見えないようにする。
 fn truncate_to_width(text: &str, width: usize) -> String {
+    if Line::raw(text).width() <= width {
+        return text.to_owned();
+    }
     let mut out = String::new();
     let mut used = 0;
     for c in text.chars() {
         let w = Line::raw(c.to_string()).width();
-        if used + w > width {
+        if used + w > width.saturating_sub(1) {
             break;
         }
         used += w;
         out.push(c);
+    }
+    if width > 0 {
+        out.push('~');
     }
     out
 }

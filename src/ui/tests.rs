@@ -272,9 +272,9 @@ fn long_names_and_lines_are_truncated() {
     });
     let terminal = render(&mut app, 20, 3);
 
-    // 一覧は 40% = 8 桁。名前は最低 6 桁は出し、右の列は切れる。右ペイン 11 桁。はみ出した分は末尾を切る
+    // 一覧は 40% = 8 桁。名前は最低 6 桁は出し（切ったので末尾は `~`）、右の列は切れる。右ペイン 11 桁
     terminal.backend().assert_buffer_lines([
-        "> 012345 0123456789a",
+        "> 01234~ 0123456789a",
         "         0123456789a",
         &help_row(20, "t"),
     ]);
@@ -303,11 +303,11 @@ fn long_names_keep_status_and_time_columns() {
     advance(&mut app, 12);
     let terminal = render(&mut app, 80, 24);
 
-    // 一覧は 80 桁の 40% = 32 桁。名前は 32 - (2 + 1 + 8 + 1 + 7) = 13 桁に切られ、状態と時間は残る
+    // 一覧は 80 桁の 40% = 32 桁。名前は 32 - (2 + 1 + 8 + 1 + 7) = 13 桁に切られ（末尾は `~`）、状態と時間は残る
     let mut expected = vec![
         format!(
             "{:<32} {:<47}",
-            "> frontend-dev- running  12s", "frontend-dev-server  running 12s"
+            "> frontend-dev~ running  12s", "frontend-dev-server  running 12s"
         ),
         format!("{:<32} {:<47}", "  api           idle", ""),
     ];
