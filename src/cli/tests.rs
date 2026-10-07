@@ -98,3 +98,11 @@ fn help_text_lists_options() {
     assert!(help.contains("-V, --version"), "{help}");
     assert!(help.is_ascii(), "{help}");
 }
+
+#[test]
+fn help_text_explains_config_file() {
+    let help = help_text();
+
+    assert!(help.contains("runs.toml"), "{help}");
+    assert!(help.contains("[[command]]"), "{help}");
+}

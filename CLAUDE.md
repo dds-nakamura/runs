@@ -1,5 +1,10 @@
 # runs（Rust ターミナルアプリ）
 
+自分のプロジェクトをターミナルから動かす操作盤（コマンドランナー）。設定に登録したコマンド（ビルド・テスト・開発サーバーなど）を
+TUI から選んで実行し、出力をその場で見て、実行中のものを停止できることが芯（#5）。子プロセスの起動・出力・停止の仕組みを土台に、
+`gh` などの CLI 経由の PR / CI / 課題の確認、AI エージェントの実行状況、複数リポジトリの状態を後から載せる。
+外部サービスは API を直接呼ばず、既存の CLI（`gh` など）経由で使う。利用者は当面は開発者本人。
+
 EVECLOUD とは独立した単独プロジェクト。EVECLOUD の規約・Backlog `THEMIS_GO`・evecloud-* のスキルやエージェントは適用しない。
 リモート: GitHub `dds-nakamura/runs`（private。課題は GitHub Issues、PR は `gh`）。応答・ドキュメントは日本語。仕様の細部は未確定（末尾の「未確定事項」）。決まったらこのファイルを更新する。
 
@@ -35,13 +40,19 @@ clippy 警告を `#[allow(...)]` で黙らせる場合は理由コメント必�
 ## Architecture（暫定）
 
 - クレート名・バイナリ名は `runs`。単一のバイナリクレート（edition 2024、MSRV 1.88、`publish = false`、lib ターゲットなし）
-- モジュール（実端末に触るのは `tui` と `main` だけ）
-  - `src/main.rs`: 引数の解釈結果で分岐、エラーの表示、終了コード（0 = 正常、1 = 実行時エラー、2 = 引数の誤り）。`#![forbid(unsafe_code)]`
+- モジュール（実端末に触るのは `tui` と `main` だけ。子プロセスに触るのは `runner` だけ）
+  - `src/main.rs`: 引数の解釈 → 設定の読み込み → `tui::run`。エラーの表示、終了コード（0 = 正常、1 = 実行時エラー、2 = 引数の誤り）。`#![forbid(unsafe_code)]`
   - `src/cli.rs`: 引数の解釈（手書き。`Command`）、バージョンと使い方の文字列
-  - `src/app.rs`: 状態 `App`、`Action`、キーバインド（`action_for`: イベント → Action）、更新（`App::apply`）
-  - `src/ui.rs`: 描画（`draw(frame, app)`）。`TestBackend` に描ける
-  - `src/tui.rs`: 端末ガード（`TerminalGuard`）とイベントループ（`run`）
-- テストは実装と別ファイル: `src/<モジュール>/tests.rs`（層 1・2）、`tests/cli.rs`（層 3）。`tui` と `main` は層 3・4 で確認する
+  - `src/config.rs`: `runs.toml` の探索（カレントから親へ）・読み込み・検証（`Config` / `CommandSpec`）。無い・壊れていれば TUI を起動せず終了コード 1
+  - `src/app.rs`: 状態 `App`（コマンドごとの状態・出力・選択・スクロール）、`Action`、キーバインド（`action_for`）、更新（`App::apply` → `Effect`、`on_runner_event`）。
+    プロセスには触らず、`Effect::Start / Stop` で `tui` に頼む
+  - `src/output.rs`: 出力行の保持（上限 10,000 行）と無害化（`sanitize`: ESC シーケンス・制御文字の除去）
+  - `src/runner.rs`: 子プロセスの起動（シェル経由）・出力の読み取りスレッド・停止（Unix: プロセスグループへ `kill`、Windows: `taskkill /T /F`）・終了時の全停止。通知はチャネル
+  - `src/ui.rs`: 描画（`draw(frame, app)`）と区画（`layout(area, app)`。`tui` が出力欄の高さを `App` に渡すのにも使う）。`TestBackend` に描ける
+  - `src/tui.rs`: 端末ガード（`TerminalGuard`）とイベントループ（`run`: `event::poll(50 ms)` + チャネルの `try_recv`）
+- 設定ファイルは `runs.toml`（`[[command]]` の `name` / `command` / `cwd`、トップレベルの `shell`）。書き方は `runs --help`。リポジトリ直下のものは `runs` 自身の開発用
+- テストは実装と別ファイル: `src/<モジュール>/tests.rs`（層 1・2）、`tests/cli.rs`（層 3）。`tui` と `main` は層 3・4 で確認する。
+  テスト専用のゲッターは `#[cfg(test)]` を付ける（本体で使われないと dead_code で clippy に落ちる）
 - 画面と CLI のメッセージは英語（ASCII）。出力は `writeln!` を使い、`println!` / `eprintln!` は使わない（閉じたパイプへ書くと panic する）
 - 依存: `ratatui` 0.30（`default-features = false`、feature は `crossterm` / `layout-cache` / `underline-color`）、`anyhow` 1。
   crossterm（0.29）は直接依存にせず `ratatui::crossterm` を使う（ratatui とバージョンがずれるのを避ける。例外は `rust-safety` 8章）
@@ -63,6 +74,7 @@ clippy 警告を `#[allow(...)]` で黙らせる場合は理由コメント必�
 - panic・エラー時に端末を復元しない（raw mode / alternate screen / カーソル非表示のまま終了）
 - `area.width - 2` のような `u16` の減算で、極小の端末サイズでアンダーフローさせる。`&s[..n]` で UTF-8 の文字境界を壊す
 - Windows と Unix の差を片側だけで実装・確認する（crossterm の Windows ではキーの Press と Release が両方届く、パス区切り、改行）
+- `cmd` に渡す文字列を std の `arg` で渡す（MSVC 流の `\"` エスケープを `cmd` は解釈しない）。`raw_arg` で全体を `"` に包み、`/S /C` と組み合わせる（`runner::push_command_arg`）
 - TUI 実行中に `println!` / `dbg!` で stdout に出して画面を崩す
 - `Cargo.lock` を手で編集する／`cargo update` で無関係な依存まで上げる
 - 実装中に計画が変わったとき、plan.md に差分を追記するだけで、古くなった節（証明のテスト名・リスク・spec の設計）を直さない

@@ -1,0 +1,18 @@
+# runs 自身の開発用の設定。このディレクトリで `runs` を起動すると一覧に出る。
+# 書き方は `runs --help`。
+
+[[command]]
+name = "verify"
+command = "bash .claude/scripts/verify.sh"
+
+[[command]]
+name = "test"
+command = "cargo test"
+
+[[command]]
+name = "clippy"
+command = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
+
+[[command]]
+name = "fmt-check"
+command = "cargo fmt --all -- --check"
