@@ -38,6 +38,13 @@
   途中で 2 点判明: `timeout /t 3` は stdin が無いと即終了する（#5 の懸念点 6 のとおり。確認手順を `ping -n 4` に変更）、
   `ping` の日本語出力が CP932 で化ける（#5 の懸念点 4 で許容したが、日常のコマンドで起きるので #8 として起票）
 
+- **reviewer の Important 2 件への対応**
+  1. 一覧が 40% の上限で詰まると、名前でなく状態・時間の列が切れていた（spec と逆） → 名前を表示幅で切り詰め、状態と時間を残す。極小幅では名前を最低 6 桁。
+     テスト `long_names_keep_status_and_time_columns`。あわせて 8 桁に収まらない終了コードは一覧で `exit ?`（`huge_exit_code_does_not_shift_columns`）
+  2. Unix で、シェルが先に終わると孫プロセスが残ったまま再実行が始まる → 停止を頼んだ実行は、プロセスグループが消える（`kill -s 0` が失敗する）まで `Exited` を送らない。
+     テスト `grandchild_ignoring_term_is_killed_after_grace` を「`Exited` が猶予後に届き、その時点で孫がいない」形に強化
+- Nit への対応: 再読み込み失敗の通知は原因（`root_cause`）だけを出す／通知はどのキーでも消える（`App::clear_notice`）／spec に懸念点 8（消して戻す操作）を追記
+
 ## 変更するファイル
 
 新規
@@ -64,7 +71,7 @@
   - 既存テストは `Effect::Start(0)` → `Effect::Start { run: 1, .. }` のように `RunId` と `Vec` に合わせて直す（期待する挙動は変えない）
 - `src/ui.rs` + `src/ui/tests.rs`: 一覧の行を `印 2 + 名前 + 1 + 状態 8 + 1 + 時間 7`（時間は `timefmt`、未実行は空白 7）。`Panes.header` に `<名前>  <状態>[ <経過>]` / `<名前>  <状態>  took <所要>` / `<名前>`。
   最下行は `app.notice()` があればそれ、無ければキーの案内 `Up/Down select  Enter run/restart  s stop  r reload  PgUp/PgDn/End scroll  q quit`（タイトルは右端のまま）。
-  既存テストの期待値は新しい列・見出し行に合わせて更新（見た目の仕様変更）。`render` ヘルパーは `app.set_now(固定の Instant)` を呼ぶ
+  既存テストの期待値は新しい列・見出し行に合わせて更新（見た目の仕様変更）。時刻は `App::new` に渡した `Instant` からの相対（`advance`）で決める
 - `src/tui.rs`: `run(app, config)` で `path = config.path.clone()`、`Runner::new(config.shell.clone())`。ループ: `app.set_now(Instant::now())` → 描画判定に `app.needs_tick() && last_draw.elapsed() >= 1 s` を追加 →
   `apply` / `on_runner_event` の `Vec<Effect>` を `handle_effects` で処理（`Start { run, spec }` → `runner.start(run, &spec)`、`Stop(run)` → `runner.stop(run)`、
   `Reload` → `config::load_file(&path)` の成否で `replace_config` + `set_shell` + 通知、または失敗の通知）

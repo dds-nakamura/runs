@@ -111,6 +111,10 @@ fn event_loop(
         // 入力が無ければ POLL_INTERVAL で戻り、子プロセスの通知だけを取り込む（リサイズもイベントとして届く）
         if event::poll(POLL_INTERVAL).context("failed to poll terminal events")? {
             let event = event::read().context("failed to read a terminal event")?;
+            // 通知はどのキーでも消える（リサイズでは消えない）
+            if matches!(&event, event::Event::Key(key) if key.kind == event::KeyEventKind::Press) {
+                app.clear_notice();
+            }
             if let Some(action) = app::action_for(&event) {
                 // 開始時刻の記録に使うので、poll で待った分だけ古くなった時刻を取り直す
                 app.set_now(Instant::now());
@@ -150,8 +154,9 @@ fn handle_effects(effects: Vec<Effect>, app: &mut App, runner: &mut Runner, conf
                     let noun = if count == 1 { "command" } else { "commands" };
                     app.set_notice(format!("reloaded {} ({count} {noun})", config::FILE_NAME));
                 }
-                // 設定ファイルの引用が含まれうる。set_notice が 1 行目だけを無害化して保持する
-                Err(err) => app.set_notice(format!("reload failed: {err:#}")),
+                // 文脈（`invalid <絶対パス>`）を付けると 80 桁で理由が切れるので、原因だけを出す。
+                // 設定ファイルの引用が含まれうるが、set_notice が 1 行目だけを無害化して保持する
+                Err(err) => app.set_notice(format!("reload failed: {}", err.root_cause())),
             },
         }
     }

@@ -333,6 +333,7 @@ fn grandchild_ignoring_term_is_killed_after_grace() {
         other => panic!("Started のはずが {other:?}"),
     }
 
+    let stopped_at = Instant::now();
     runner.stop(0);
     let events = collect_until_done(&rx);
     assert!(
@@ -340,15 +341,17 @@ fn grandchild_ignoring_term_is_killed_after_grace() {
         "{events:?}"
     );
 
-    // 猶予（2 秒）の後に KILL が届き、sleep が消える
-    let deadline = Instant::now() + Duration::from_secs(6);
-    loop {
-        if !process_alive("sleep 31") {
-            break;
-        }
-        assert!(Instant::now() < deadline, "sleep 31 が残っている");
-        std::thread::sleep(Duration::from_millis(200));
-    }
+    // 停止を頼んだ実行の Exited は、猶予（2 秒）の後に KILL が届いて孫が消えてから届く
+    // （シェルだけが先に終わっても、再実行が古いプロセスと並ばないように）
+    assert!(
+        stopped_at.elapsed() >= Duration::from_secs(2),
+        "{:?}",
+        stopped_at.elapsed()
+    );
+    assert!(
+        !process_alive("sleep 31"),
+        "Exited の時点で sleep 31 が残っている"
+    );
 }
 
 /// 終了時の全停止でも、シェル経由の孫プロセスが残らないこと。

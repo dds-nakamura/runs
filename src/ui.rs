@@ -16,6 +16,8 @@ const STATUS_WIDTH: usize = 8;
 const MARK_WIDTH: usize = 2;
 /// 一覧の幅の上限（画面幅に対する割合）。
 const LIST_MAX_PERCENT: u32 = 40;
+/// 幅が足りないときも名前に残す最低の桁数。
+const MIN_NAME_WIDTH: usize = 6;
 
 /// 画面の区画。`draw` と `tui::run`（出力欄の高さを `App` に渡す）の両方が使う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +66,16 @@ pub fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn draw_list(frame: &mut Frame, area: Rect, app: &App) {
-    let name_width = name_width(app);
+    // 幅の上限で詰まったら、切るのは名前。状態と時間の列は残す（Paragraph の右端切りに任せない）。
+    // ただし名前が全く読めなくなる極小幅では、名前を最低 MIN_NAME_WIDTH 桁出し、右の列が切れるのを許す
+    let fixed = MARK_WIDTH + 1 + STATUS_WIDTH + 1 + timefmt::WIDTH;
+    let full = name_width(app);
+    let available = usize::from(area.width).saturating_sub(fixed);
+    let name_width = if available >= full {
+        full
+    } else {
+        available.max(full.min(MIN_NAME_WIDTH))
+    };
     let now = app.now();
     let lines: Vec<Line> = app
         .commands()
@@ -72,11 +83,11 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &App) {
         .enumerate()
         .map(|(index, command)| {
             let mark = if index == app.selected() { "> " } else { "  " };
-            // `{:<w$}` は文字数で埋めるので、全角を含む名前は表示幅で埋める
-            let name = pad_to_width(command.name(), name_width);
+            // `{:<w$}` は文字数で埋めるので、全角を含む名前は表示幅で切って埋める
+            let name = pad_to_width(&truncate_to_width(command.name(), name_width), name_width);
             Line::raw(format!(
                 "{mark}{name} {:<STATUS_WIDTH$} {:<time_width$}",
-                status_label(command),
+                fit_status(&status_label(command)),
                 time_label(command, now),
                 time_width = timefmt::WIDTH,
             ))
@@ -128,6 +139,30 @@ fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
     // 通知があればキーの案内の代わりに出す（次の操作で消える）
     frame.render_widget(Line::raw(app.notice().unwrap_or(HELP)), left);
     frame.render_widget(title, title_area);
+}
+
+/// 表示幅が `width` に収まるまで末尾の文字を落とす（全角の途中で切らない）。
+fn truncate_to_width(text: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        let w = Line::raw(c.to_string()).width();
+        if used + w > width {
+            break;
+        }
+        used += w;
+        out.push(c);
+    }
+    out
+}
+
+/// 一覧の状態の列に収まらない表記（Windows の大きな終了コードなど）は `exit ?` にする。全文は見出し行に出る
+fn fit_status(label: &str) -> String {
+    if label.len() > STATUS_WIDTH {
+        "exit ?".to_owned()
+    } else {
+        label.to_owned()
+    }
 }
 
 /// 表示幅が `width` になるまで右に空白を足す。

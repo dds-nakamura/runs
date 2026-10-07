@@ -365,6 +365,11 @@ impl App {
         self.notice.as_deref()
     }
 
+    /// 通知を消す。`tui` がキー入力のたびに呼ぶ（割り当てのないキーでも消える）
+    pub fn clear_notice(&mut self) {
+        self.notice = None;
+    }
+
     /// 時間の表示があるか（実行中、または一度でも終わったコマンドがある）。あれば毎秒描き直す
     pub fn needs_tick(&self) -> bool {
         self.commands

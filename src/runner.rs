@@ -56,6 +56,8 @@ struct RunningProcess {
     child: Arc<Mutex<Child>>,
     /// 終了待ちスレッドが終了を確認したら true
     finished: Arc<AtomicBool>,
+    /// 停止を頼まれたら true。Unix では、シェルだけが先に終わっても孫が消えるまで `Exited` を送らない
+    stop_requested: Arc<AtomicBool>,
     waiter: JoinHandle<()>,
 }
 
@@ -101,6 +103,7 @@ impl Runner {
         let Some(process) = self.running.get(&run) else {
             return;
         };
+        process.stop_requested.store(true, Ordering::Release);
         if let Err(message) = terminate(process.pid) {
             // 外部コマンドが使えない。直接の子だけでも止める（孫は残る）
             let fallback = lock(&process.child).kill();
@@ -215,10 +218,12 @@ impl Runner {
             .collect();
         let child = Arc::new(Mutex::new(child));
         let finished = Arc::new(AtomicBool::new(false));
+        let stop_requested = Arc::new(AtomicBool::new(false));
         let waiter = {
             let tx = self.tx.clone();
             let child = Arc::clone(&child);
             let finished = Arc::clone(&finished);
+            let stop_requested = Arc::clone(&stop_requested);
             thread::spawn(move || {
                 // ブロックする wait ではなくポーリングにして、Runner 側が Child::kill を使えるようにする
                 let result = loop {
@@ -235,6 +240,11 @@ impl Runner {
                 let deadline = Instant::now() + READER_GRACE;
                 while Instant::now() < deadline && readers.iter().any(|r| !r.is_finished()) {
                     thread::sleep(POLL_INTERVAL);
+                }
+                // 停止を頼まれていたら、孫プロセスも含めて消えてから終了を伝える。
+                // そうしないと「停止して再実行」で、古いサーバーがポートを握ったまま新しいものが起動する（Unix）
+                if stop_requested.load(Ordering::Acquire) {
+                    wait_for_group_exit(pid, STOP_GRACE + FORCE_GRACE);
                 }
                 finished.store(true, Ordering::Release);
                 let event = match result {
@@ -253,6 +263,7 @@ impl Runner {
             pid,
             child,
             finished,
+            stop_requested,
             waiter,
         }
     }
@@ -355,6 +366,21 @@ fn spawn_reader(
             }
         }
     })
+}
+
+/// プロセスグループが消えるまで待つ（上限付き）。Windows は `taskkill /T` が木ごと止めるので待たない。
+/// pgid が別のグループに再利用されていた場合は上限まで待ってしまうが、害は遅れだけ
+fn wait_for_group_exit(pid: u32, limit: Duration) {
+    if !cfg!(unix) {
+        return;
+    }
+    let deadline = Instant::now() + limit;
+    // シグナル 0 は送らずに存在だけを確かめる。グループに誰かいれば成功する
+    while Instant::now() < deadline
+        && run_quietly("kill", &["-s", "0", "--", &format!("-{pid}")]).is_ok()
+    {
+        thread::sleep(POLL_INTERVAL);
+    }
 }
 
 /// 穏やかに止める。Unix はプロセスグループへ TERM、Windows は木ごと強制終了（穏やかな手段が無い）。

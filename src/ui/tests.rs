@@ -272,7 +272,7 @@ fn long_names_and_lines_are_truncated() {
     });
     let terminal = render(&mut app, 20, 3);
 
-    // 一覧は 40% = 8 桁、区切り 1 桁、右ペイン 11 桁。はみ出した分は末尾を切る
+    // 一覧は 40% = 8 桁。名前は最低 6 桁は出し、右の列は切れる。右ペイン 11 桁。はみ出した分は末尾を切る
     terminal.backend().assert_buffer_lines([
         "> 012345 0123456789a",
         "         0123456789a",
@@ -285,13 +285,53 @@ fn pads_fullwidth_names_by_display_width() {
     let mut app = new_app("t", &["テスト", "b"]);
     app.apply(Action::SelectNext);
     run_selected(&mut app);
-    let terminal = render(&mut app, 45, 3);
+    let terminal = render(&mut app, 70, 3);
 
-    // 名前の表示幅は 6。一覧は 45 桁の 40% = 18 桁で時間の列が切れるが、状態の列は揃う
-    // `{:<w$}` は文字数で埋めるので、期待値も全角を含む部分は手で桁を合わせる（テスト 8 桁 = 全角 3 文字 + 空白 2）
+    // 名前の表示幅は 6。一覧は 2 + 6 + 1 + 8 + 1 + 7 = 25 桁（70 桁の 40% = 28 に収まる）で、状態と時間の列が揃う。
+    // `{:<w$}` は文字数で埋めるので、全角を含む行は手で桁を合わせる（テスト = 全角 3 文字 = 6 桁）
     terminal.backend().assert_buffer_lines([
-        format!("  テスト idle      {:<26}", "b  running 0s"),
-        format!("> b      running  {:<26}", ""),
-        help_row(45, "t"),
+        format!("  テスト idle{:13}{:<44}", "", "b  running 0s"),
+        format!("> b      running  0s     {:<44}", ""),
+        help_row(70, "t"),
+    ]);
+}
+
+#[test]
+fn long_names_keep_status_and_time_columns() {
+    let mut app = new_app("runs 1.2.3", &["frontend-dev-server", "api"]);
+    run_selected(&mut app);
+    advance(&mut app, 12);
+    let terminal = render(&mut app, 80, 24);
+
+    // 一覧は 80 桁の 40% = 32 桁。名前は 32 - (2 + 1 + 8 + 1 + 7) = 13 桁に切られ、状態と時間は残る
+    let mut expected = vec![
+        format!(
+            "{:<32} {:<47}",
+            "> frontend-dev- running  12s", "frontend-dev-server  running 12s"
+        ),
+        format!("{:<32} {:<47}", "  api           idle", ""),
+    ];
+    expected.extend((2..23).map(|_| " ".repeat(80)));
+    expected.push(help_row(80, "runs 1.2.3"));
+    terminal.backend().assert_buffer_lines(expected);
+}
+
+/// Unix の終了コードは 8 ビットなので、大きなコードは Windows でしか起きない。
+#[cfg(windows)]
+#[test]
+fn huge_exit_code_does_not_shift_columns() {
+    let mut app = new_app("t", &["a", "b"]);
+    let run = run_selected(&mut app);
+    app.on_runner_event(exited(run, 1_000_000));
+    let terminal = render(&mut app, 60, 3);
+
+    // 一覧は 2 + 1 + 1 + 8 + 1 + 7 = 20 桁。8 桁に収まらない終了コードは一覧では `exit ?`、見出しに全文
+    terminal.backend().assert_buffer_lines([
+        format!(
+            "{:<20} {:<39}",
+            "> a exit ?   0s ago", "a  exit 1000000  took 0s"
+        ),
+        format!("{:<20} {:<39}", "  b idle", ""),
+        help_row(60, "t"),
     ]);
 }
