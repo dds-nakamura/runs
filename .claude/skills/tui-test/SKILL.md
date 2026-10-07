@@ -40,7 +40,7 @@ argument-hint: <対象画面・キー操作・機能>
 | `src/app/tests.rs` | `feed(&mut app, &event)` | イベントループと同じ手順（`action_for` → `apply`）で 1 件処理する |
 | `src/ui/tests.rs` | `render(width, height)` | 固定タイトルの `App` を `TestBackend` に描き、`Terminal` を返す |
 | `src/cli/tests.rs` | `parse_args(&[..])` / `error_message(&[..])` | 引数を解釈する／エラーメッセージを取り出す |
-| `src/app/tests.rs` | `config(&[..])` / `app()` / `exit_status(code)` / `output(id, text)` | コマンド一覧付きの `App` を作る／OS ごとの `ExitStatus`／`RunnerEvent::Output` を作る |
+| `src/app/tests.rs` | `config(&[..])` / `app()` / `exit_status(code)` / `output(run, text)` / `exited(run, code)` / `run_selected(&mut app)` / `advance(&mut app, secs)` / `starts(&effects)` | コマンド一覧付きの `App` を作る／OS ごとの `ExitStatus`／通知を作る／選択中を実行して `RunId` を得る／`set_now` で時間を進める／`Vec<Effect>` から `Start` の `RunId` を取り出す |
 | `src/ui/tests.rs` | `sample_app()` / `render(&mut app, w, h)` / `row(list, output)` | 3 コマンドの固定状態／`tui::run` と同じ手順（`layout` → `set_output_height` → `draw`）で描く／80 桁の期待行を組む |
 | `src/config/tests.rs` | `parse_ok` / `parse_err` / `TempDir` | 解釈の成功・失敗を取り出す／一時ディレクトリ（drop で消す） |
 | `src/runner/tests.rs` | `spec(command)` / `long_running()` / `collect_until_done(&rx)` / `output_lines` / `exit_code` | 実プロセスのテスト用。`Exited` か `SpawnFailed` まで 10 秒のタイムアウト付きで集める |
@@ -55,7 +55,11 @@ argument-hint: <対象画面・キー操作・機能>
 
 - 描画の期待値は、レイアウトの余りが偶数になるサイズで書く（80x24 など）。余りが奇数のときの丸めを期待値にしない
 - 描画テストにクレートのバージョンなど変わる値を入れない（`App::new` に固定の文字列を渡す）
-- 画面の期待値は `row(list, output)` のように桁数を固定したヘルパーで組み、手で空白を数えない
+- 画面の期待値は `row(list, output)` のように桁数を固定したヘルパーで組み、手で空白を数えない。
+  ただし `format!("{:<w$}")` は文字数で埋めるので、全角を含む行は表示幅で手で合わせる
+- 時間に依存する挙動は `App::set_now` で進める（`advance` ヘルパー）。`Instant::now()` を `app` のコードに書かない。
+  描画テストは `set_now` で固定の経過（例: 12 秒）を作ってから `render` する
+- `apply` / `on_runner_event` は `Vec<Effect>` を返す。`assert_eq!(effects, [Effect::Stop(run)])` のようにスライスと比較するか、`starts(&effects)` で `RunId` を取り出す
 - `tests/cli.rs` から内部の関数は呼べない（lib ターゲットが無い）。内部のロジックは `src/<モジュール>/tests.rs` で確かめる
 
 ## 手順

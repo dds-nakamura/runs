@@ -18,6 +18,16 @@
 3. **通知は `apply` の先頭で消す**: どの `Action` でも、処理の前に `notice = None`。`set_notice` は `output::sanitize` を通し、1 行目だけを保持する
 4. **`stop_all_and_wait` は変えない**: `RunId` をキーにするだけ。再実行中（`restart_pending`）に `q` を押した場合は、停止だけ行われて再実行は起きない（終了するので当然）
 
+## 実装中に分かったこと（計画との差分。該当する節も直してある）
+
+- **`App::new` に `now: Instant` を足した**（初期値も外から受け取る。`main` と `tui` だけが `Instant::now()` を呼ぶ）
+- **`set_now` は描画の直前だけでは足りない**: 疑似端末で `sleep 3` の `took` が `2s` になった。開始・終了時刻の記録に、`event::poll` で待った分だけ古い時刻を使っていたため。
+  入力の処理前と通知の取り込み前にも `set_now(Instant::now())` を呼ぶようにした
+- **`CommandView::spec` / `run` / `restart_pending` のゲッターは `#[cfg(test)]`**（描画では使わない）
+- **通知の文言は単数形に対応**（`1 command` / `2 commands`）
+- **疑似端末の確認スクリプト**（scratchpad の `pty-polish.sh`。リポジトリには入れていない）で、残存プロセスは `pgrep -f "^sleep 300$"` で数える。
+  `pgrep -x sleep` だとスクリプト自身の `sleep 1` を数えてしまう
+
 ## 変更するファイル
 
 新規
