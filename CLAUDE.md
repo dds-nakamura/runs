@@ -93,4 +93,4 @@ clippy 警告を `#[allow(...)]` で黙らせる場合は理由コメント必�
 - [x] エラー処理クレート → `anyhow` のみで開始。エラーの種類で分岐する必要が出たら `thiserror` の追加を spec で合意する
 - [x] 課題管理とリモート → GitHub `dds-nakamura/runs`（private）
 - [x] edition・MSRV → edition 2024 / MSRV 1.88（`rust-version`。1.88 のツールチェーンでの実ビルドは未検証）
-- [ ] 配布方法（cargo install / バイナリ配布。最初のリリース前に決める）
+- [ ] 配布方法（cargo install / バイナリ配布。最初のリリース前に決める。`encoding_rs` の WHATWG データが BSD-3-Clause なので、バイナリを配るときは著作権表示を同梱する）

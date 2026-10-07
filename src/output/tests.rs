@@ -175,6 +175,26 @@ fn without_fallback_invalid_bytes_become_replacement_char() {
 }
 
 #[test]
+fn cp932_bytes_that_happen_to_be_valid_utf8_are_not_redecoded() {
+    // 既知の制約: 半角カナ「ﾃｱ」（C3 B1）だけの行は UTF-8 の「ñ」として正しいので読み直さない（行単位の判定）
+    let mut buffer = OutputBuffer::with_fallback(10, Some(encoding_rs::SHIFT_JIS));
+
+    buffer.push_raw(&[0xc3, 0xb1]);
+
+    assert_eq!(buffer.lines().collect::<Vec<_>>(), vec!["ñ"]);
+}
+
+#[test]
+fn control_chars_produced_by_fallback_decoding_are_sanitized() {
+    // Shift_JIS の 0x80 は U+0080（C1 制御文字）になる。読み直した後も `?` に置き換える
+    let mut buffer = OutputBuffer::with_fallback(10, Some(encoding_rs::SHIFT_JIS));
+
+    buffer.push_raw(&[0x80, 0x82, 0xa9]);
+
+    assert_eq!(buffer.lines().collect::<Vec<_>>(), vec!["?か"]);
+}
+
+#[test]
 fn decode_returns_borrowed_for_valid_utf8() {
     // UTF-8 の行はコピーしない（大量の出力で無駄にしない）
     let decoded = decode(b"plain ascii", Some(encoding_rs::SHIFT_JIS));

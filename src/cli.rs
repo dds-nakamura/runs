@@ -60,9 +60,9 @@ pub fn help_text() -> String {
          \n\
          Commands are read from {file} in the current directory or a parent:\n\
          \n\
-         {example}
-\n         
-\n         {optional}",
+         {example}\n\
+         \n\
+         {optional}",
         version = version_text(),
         name = env!("CARGO_PKG_NAME"),
         file = crate::config::FILE_NAME,

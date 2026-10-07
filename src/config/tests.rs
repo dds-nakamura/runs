@@ -114,6 +114,14 @@ fn utf8_encoding_means_no_fallback() {
 }
 
 #[test]
+fn line_incompatible_encodings_are_errors() {
+    for label in ["utf-16le", "utf-16be", "iso-2022-jp", "iso-2022-kr"] {
+        let message = parse_err(&format!("encoding = \"{label}\"\n{MINIMAL}"));
+        assert!(message.contains("encoding"), "{label}: {message}");
+    }
+}
+
+#[test]
 fn unknown_encoding_is_error() {
     let message = parse_err(&format!("encoding = \"klingon\"\n{MINIMAL}"));
 

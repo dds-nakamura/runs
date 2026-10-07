@@ -142,13 +142,23 @@ pub fn parse(text: &str, root: &Path) -> Result<Config> {
 }
 
 /// `encoding` の値を文字コードにする。`utf-8` は「読み直さない」。
+///
+/// 出力は `\n` で行に切ってから読み直すので、UTF-16（`\n` が 2 バイト）と ISO-2022-JP（7 ビットなので
+/// UTF-8 として正しく、読み直しが起きない）は扱えない。replacement 系のラベルも拒む
 fn parse_encoding(label: &str) -> Result<Option<&'static Encoding>> {
-    let Some(encoding) = Encoding::for_label(label.trim().as_bytes()) else {
+    // ラベルは外部入力。メッセージには Debug 書式（制御文字をエスケープ）で出す
+    let Some(encoding) = Encoding::for_label_no_replacement(label.trim().as_bytes()) else {
         bail!(
             "unknown `encoding`: {:?} (examples: \"shift_jis\", \"windows-1252\", \"utf-8\")",
             label
         );
     };
+    if encoding.output_encoding() != encoding || encoding == encoding_rs::ISO_2022_JP {
+        bail!(
+            "`encoding` {:?} cannot be used for line-based output (UTF-16 and ISO-2022-JP are not supported)",
+            label
+        );
+    }
     Ok((encoding != encoding_rs::UTF_8).then_some(encoding))
 }
 

@@ -105,4 +105,18 @@ fn help_text_explains_config_file() {
 
     assert!(help.contains("runs.toml"), "{help}");
     assert!(help.contains("[[command]]"), "{help}");
+    assert!(help.contains("encoding = "), "{help}");
+    assert!(help.contains("shell = "), "{help}");
+}
+
+#[test]
+fn help_text_has_no_stray_indentation() {
+    // format 文字列の行継続（`\n\`）を忘れると、空白だけの行や字下げされた行が混ざる
+    for line in help_text().lines() {
+        assert!(line.trim_end() == line, "末尾に空白: {line:?}");
+        assert!(
+            line.is_empty() || !line.starts_with("   "),
+            "字下げが深すぎる: {line:?}"
+        );
+    }
 }

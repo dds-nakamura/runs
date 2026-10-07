@@ -30,7 +30,9 @@ Rust / Go / Node / Python / cargo の出力は UTF-8 なので、これらは化
 
 - `unsafe` を使わない（Windows API の `GetACP` / `GetConsoleOutputCP` は `windows-sys` と `unsafe` が要るので使わない）
 - 子プロセスの出力は信頼できない入力（`rust-safety` 3 章）。デコードの前後で制御文字の除去（`sanitize`）は維持する
-- 依存クレートの追加は合意してから（候補: `encoding_rs`。MIT / Apache-2.0、`unsafe` の API を使わずに済む）
+- 依存クレートの追加は合意してから（候補: `encoding_rs`。`unsafe` の API を使わずに済む）
+  - 追加した依存（2026-10-07）: `encoding_rs` 0.8.42 — ライセンスは `(Apache-2.0 OR MIT) AND BSD-3-Clause`（BSD-3-Clause は同梱の WHATWG の索引データ。
+    バイナリに組み込まれるので、配布するときは著作権表示の同梱が要る）。推移的依存: `simdutf8` 0.1.5、`core_detect` 1.0.0、`multiversion_no_op` 1.0.0（いずれも MIT / Apache-2.0）
 - #5・#7 の挙動（停止・再読み込み・時刻など）は変えない
 
 ## 範囲外
@@ -38,6 +40,8 @@ Rust / Go / Node / Python / cargo の出力は UTF-8 なので、これらは化
 - 子プロセスへの入力（stdin）の文字コード
 - 設定ファイル自体の文字コード（TOML は UTF-8 のみ）
 - 1 行の中で UTF-8 と CP932 が混ざるケース（行単位で判定する）
+- CP932 のバイト列が偶然 UTF-8 として正しい行（半角カナ「ﾃｱ」= `C3 B1` だけの行は「ñ」になる）。ひらがな・全角記号を含む普通の行では起きない
+- UTF-16 と ISO-2022-JP の出力（行単位の読み直しでは扱えないので、設定で指定するとエラーにする）
 
 ## 未解決の問い
 
