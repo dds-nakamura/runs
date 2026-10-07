@@ -6,8 +6,10 @@ use ratatui::text::{Line, Text};
 use ratatui::widgets::Paragraph;
 
 use crate::app::{App, CommandState, CommandView};
+use crate::timefmt;
 
-const HELP: &str = "Up/Down select  Enter run  s stop  PgUp/PgDn/End scroll  q quit";
+const HELP: &str =
+    "Up/Down select  Enter run/restart  s stop  r reload  PgUp/PgDn/End scroll  q quit";
 /// 状態の表記の最大幅（`exit 255`）。
 const STATUS_WIDTH: usize = 8;
 /// 選択中の印の幅（`> `）。
@@ -19,38 +21,51 @@ const LIST_MAX_PERCENT: u32 = 40;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Panes {
     pub list: Rect,
+    /// 出力欄の見出し（選択中のコマンドの名前・状態・時間）
+    pub header: Rect,
     pub output: Rect,
     pub help: Rect,
 }
 
-/// 左に一覧、右に選択中の出力、最下行にキーの案内。
+/// 左に一覧、右に見出しと選択中の出力、最下行にキーの案内（または通知）。
 ///
-/// 一覧の幅は「印 + 名前の最大幅 + 空白 + 状態」、ただし画面幅の 40% まで。
+/// 一覧の幅は「印 + 名前の最大幅 + 空白 + 状態 + 空白 + 時間」、ただし画面幅の 40% まで。
 pub fn layout(area: Rect, app: &App) -> Panes {
     let [main, help] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
 
     // u16 の掛け算は 65535 × 40 であふれるので u32 で計算する
     let cap = u16::try_from(u32::from(area.width) * LIST_MAX_PERCENT / 100).unwrap_or(u16::MAX);
-    let wanted = u16::try_from(MARK_WIDTH + name_width(app) + 1 + STATUS_WIDTH).unwrap_or(u16::MAX);
-    let [list, _gap, output] = Layout::horizontal([
+    let wanted =
+        u16::try_from(MARK_WIDTH + name_width(app) + 1 + STATUS_WIDTH + 1 + timefmt::WIDTH)
+            .unwrap_or(u16::MAX);
+    let [list, _gap, right] = Layout::horizontal([
         Constraint::Length(wanted.min(cap)),
         Constraint::Length(1),
         Constraint::Fill(1),
     ])
     .areas(main);
+    let [header, output] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(right);
 
-    Panes { list, output, help }
+    Panes {
+        list,
+        header,
+        output,
+        help,
+    }
 }
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let panes = layout(frame.area(), app);
     draw_list(frame, panes.list, app);
+    draw_header(frame, panes.header, app);
     draw_output(frame, panes.output, app);
     draw_help(frame, panes.help, app);
 }
 
 fn draw_list(frame: &mut Frame, area: Rect, app: &App) {
     let name_width = name_width(app);
+    let now = app.now();
     let lines: Vec<Line> = app
         .commands()
         .iter()
@@ -60,13 +75,34 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &App) {
             // `{:<w$}` は文字数で埋めるので、全角を含む名前は表示幅で埋める
             let name = pad_to_width(command.name(), name_width);
             Line::raw(format!(
-                "{mark}{name} {:<STATUS_WIDTH$}",
-                status_label(command)
+                "{mark}{name} {:<STATUS_WIDTH$} {:<time_width$}",
+                status_label(command),
+                time_label(command, now),
+                time_width = timefmt::WIDTH,
             ))
         })
         .collect();
     // はみ出した分は Paragraph が切る（折り返さない）
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
+}
+
+fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(command) = app.selected_command() else {
+        return;
+    };
+    let mut text = command.name().to_owned();
+    if command.state() != CommandState::Idle {
+        text.push_str("  ");
+        text.push_str(&status_label(command));
+    }
+    if let Some(elapsed) = command.elapsed(app.now()) {
+        text.push(' ');
+        text.push_str(&timefmt::format_elapsed(elapsed));
+    } else if let Some(took) = command.took() {
+        text.push_str("  took ");
+        text.push_str(&timefmt::format_elapsed(took));
+    }
+    frame.render_widget(Line::raw(text), area);
 }
 
 fn draw_output(frame: &mut Frame, area: Rect, app: &App) {
@@ -87,9 +123,10 @@ fn draw_output(frame: &mut Frame, area: Rect, app: &App) {
 fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
     let title = Line::raw(app.title());
     let title_width = u16::try_from(title.width()).unwrap_or(u16::MAX);
-    let [help, title_area] =
+    let [left, title_area] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(title_width)]).areas(area);
-    frame.render_widget(Line::raw(HELP), help);
+    // 通知があればキーの案内の代わりに出す（次の操作で消える）
+    frame.render_widget(Line::raw(app.notice().unwrap_or(HELP)), left);
     frame.render_widget(title, title_area);
 }
 
@@ -115,6 +152,17 @@ fn status_label(command: &CommandView) -> String {
         CommandState::Exited { code: None } => "exit ?".to_owned(),
         CommandState::Stopped => "stopped".to_owned(),
         CommandState::SpawnFailed => "failed".to_owned(),
+    }
+}
+
+/// 一覧の時間の列。実行中は経過、終わっていれば何分前。未実行は空
+fn time_label(command: &CommandView, now: std::time::Instant) -> String {
+    if let Some(elapsed) = command.elapsed(now) {
+        timefmt::format_elapsed(elapsed)
+    } else if let Some(ago) = command.ago(now) {
+        timefmt::format_ago(ago)
+    } else {
+        String::new()
     }
 }
 

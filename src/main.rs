@@ -5,6 +5,7 @@ mod cli;
 mod config;
 mod output;
 mod runner;
+mod timefmt;
 mod tui;
 mod ui;
 
@@ -43,7 +44,7 @@ fn run() -> ExitCode {
             return ExitCode::from(EXIT_FAILURE);
         }
     };
-    let mut app = App::new(cli::version_text(), &config);
+    let mut app = App::new(cli::version_text(), &config, std::time::Instant::now());
     // tui::run が返った時点で端末は復元済みなので、ここで出すメッセージは通常の画面に残る
     match tui::run(&mut app, &config) {
         Ok(()) => ExitCode::SUCCESS,

@@ -59,6 +59,7 @@ fn parses_minimal_config() {
     let config = parse_ok(MINIMAL);
 
     assert_eq!(config.root, root());
+    assert_eq!(config.path, root().join(FILE_NAME));
     assert_eq!(config.commands.len(), 1);
     assert_eq!(config.commands[0].name, "test");
     assert_eq!(config.commands[0].command, "cargo test");
@@ -210,7 +211,33 @@ fn load_searches_parent_directories() {
     let config = load(&nested).expect("親ディレクトリの設定を見つける");
 
     assert_eq!(config.root, project);
+    assert_eq!(config.path, project.join(FILE_NAME));
     assert_eq!(config.commands[0].cwd, project);
+}
+
+#[test]
+fn load_file_reads_the_given_file() {
+    let temp = TempDir::new("load-file");
+    let path = temp.path().join("custom.toml");
+    fs::write(&path, MINIMAL).expect("設定ファイルを書ける");
+
+    let config = load_file(&path).expect("読める");
+
+    assert_eq!(config.path, path);
+    assert_eq!(config.root, temp.path());
+    assert_eq!(config.commands[0].name, "test");
+}
+
+#[test]
+fn load_file_reports_missing_file() {
+    let temp = TempDir::new("load-file-missing");
+
+    let message = format!(
+        "{:#}",
+        load_file(&temp.path().join("none.toml")).expect_err("無いファイルはエラー")
+    );
+
+    assert!(message.contains("none.toml"), "{message}");
 }
 
 #[test]

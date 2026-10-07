@@ -17,6 +17,8 @@ command = \"cargo test\"";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
+    /// 読んだ設定ファイル（再読み込みに使う）。
+    pub path: PathBuf,
     /// 設定ファイルのあるディレクトリ（プロジェクトルート）。
     pub root: PathBuf,
     /// コマンドを渡すシェル。最後の引数として `CommandSpec::command` を付ける。
@@ -58,11 +60,18 @@ pub fn load(start_dir: &Path) -> Result<Config> {
             start_dir.display()
         );
     };
+    load_file(&path)
+}
+
+/// 指定したファイルを読み込んで検証する（再読み込みでも使う）。
+pub fn load_file(path: &Path) -> Result<Config> {
     let text =
-        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     // 設定ファイルは必ずディレクトリの中にあるので parent は存在する
-    let root = path.parent().unwrap_or(start_dir);
-    parse(&text, root).with_context(|| format!("invalid {}", path.display()))
+    let root = path.parent().unwrap_or(path);
+    let mut config = parse(&text, root).with_context(|| format!("invalid {}", path.display()))?;
+    config.path = path.to_path_buf();
+    Ok(config)
 }
 
 fn find(start_dir: &Path) -> Option<PathBuf> {
@@ -108,6 +117,7 @@ pub fn parse(text: &str, root: &Path) -> Result<Config> {
     }
 
     Ok(Config {
+        path: root.join(FILE_NAME),
         root: root.to_path_buf(),
         shell,
         commands,

@@ -79,7 +79,7 @@ fn runs_command_and_reports_exit_zero() {
     let events = collect_until_done(&rx);
 
     assert!(
-        matches!(events.first(), Some(RunnerEvent::Started { id: 0 })),
+        matches!(events.first(), Some(RunnerEvent::Started { run: 0 })),
         "{events:?}"
     );
     assert_eq!(exit_code(&events), Some(0));
@@ -136,11 +136,11 @@ fn events_carry_the_command_id() {
 
     assert!(
         events.iter().all(|e| match e {
-            RunnerEvent::Started { id }
-            | RunnerEvent::Output { id, .. }
-            | RunnerEvent::Exited { id, .. }
-            | RunnerEvent::SpawnFailed { id, .. }
-            | RunnerEvent::StopFailed { id, .. } => *id == 7,
+            RunnerEvent::Started { run }
+            | RunnerEvent::Output { run, .. }
+            | RunnerEvent::Exited { run, .. }
+            | RunnerEvent::SpawnFailed { run, .. }
+            | RunnerEvent::StopFailed { run, .. } => *run == 7,
         }),
         "{events:?}"
     );
@@ -154,7 +154,7 @@ fn missing_shell_is_spawn_failed() {
     let events = collect_until_done(&rx);
 
     match events.last() {
-        Some(RunnerEvent::SpawnFailed { id: 0, message }) => {
+        Some(RunnerEvent::SpawnFailed { run: 0, message }) => {
             assert!(
                 message.contains("runs-test-no-such-program-xyz"),
                 "{message}"
@@ -190,7 +190,7 @@ fn stop_terminates_long_running_command() {
 
     runner.start(0, &spec);
     match rx.recv_timeout(TIMEOUT) {
-        Ok(RunnerEvent::Started { id: 0 }) => {}
+        Ok(RunnerEvent::Started { run: 0 }) => {}
         other => panic!("Started のはずが {other:?}"),
     }
     assert!(runner.is_running(0));
@@ -200,7 +200,7 @@ fn stop_terminates_long_running_command() {
     let events = collect_until_done(&rx);
 
     assert!(
-        matches!(events.last(), Some(RunnerEvent::Exited { id: 0, .. })),
+        matches!(events.last(), Some(RunnerEvent::Exited { run: 0, .. })),
         "{events:?}"
     );
     // 猶予（2 秒）+ 強制終了より十分前に終わる
@@ -236,7 +236,7 @@ fn stop_all_and_wait_stops_everything() {
     let mut exited: Vec<_> = rx
         .try_iter()
         .filter_map(|e| match e {
-            RunnerEvent::Exited { id, .. } => Some(id),
+            RunnerEvent::Exited { run, .. } => Some(run),
             _ => None,
         })
         .collect();
@@ -329,14 +329,14 @@ fn grandchild_ignoring_term_is_killed_after_grace() {
     // 31 秒は他のテストの sleep と区別するため
     runner.start(0, &spec("(trap '' TERM; sleep 31) & wait"));
     match rx.recv_timeout(TIMEOUT) {
-        Ok(RunnerEvent::Started { id: 0 }) => {}
+        Ok(RunnerEvent::Started { run: 0 }) => {}
         other => panic!("Started のはずが {other:?}"),
     }
 
     runner.stop(0);
     let events = collect_until_done(&rx);
     assert!(
-        matches!(events.last(), Some(RunnerEvent::Exited { id: 0, .. })),
+        matches!(events.last(), Some(RunnerEvent::Exited { run: 0, .. })),
         "{events:?}"
     );
 
@@ -359,7 +359,7 @@ fn stop_all_and_wait_kills_grandchildren() {
     // シェルが TERM で終わっても、TERM を無視する孫が残らないこと（無条件の KILL の証明）
     runner.start(0, &spec("(trap '' TERM; sleep 32) & wait"));
     match rx.recv_timeout(TIMEOUT) {
-        Ok(RunnerEvent::Started { id: 0 }) => {}
+        Ok(RunnerEvent::Started { run: 0 }) => {}
         other => panic!("Started のはずが {other:?}"),
     }
     std::thread::sleep(Duration::from_millis(300));
@@ -402,4 +402,16 @@ fn full_path_to_cmd_is_recognized() {
 
     assert_eq!(exit_code(&events), Some(0));
     assert_eq!(output_lines(&events), [r#""a b""#]);
+}
+
+#[test]
+fn set_shell_applies_to_next_start() {
+    let (mut runner, rx) = Runner::new(vec!["runs-test-no-such-program-xyz".to_owned()]);
+
+    runner.set_shell(default_shell());
+    runner.start(0, &spec("echo hello"));
+    let events = collect_until_done(&rx);
+
+    assert_eq!(exit_code(&events), Some(0));
+    assert_eq!(output_lines(&events), ["hello"]);
 }

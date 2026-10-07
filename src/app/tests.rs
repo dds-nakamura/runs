@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::process::ExitStatus;
+use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
@@ -17,6 +18,7 @@ fn key(code: KeyCode, modifiers: KeyModifiers, kind: KeyEventKind) -> Event {
 
 fn config(names: &[&str]) -> Config {
     Config {
+        path: PathBuf::from("/proj/runs.toml"),
         root: PathBuf::from("/proj"),
         shell: vec!["sh".into(), "-c".into()],
         commands: names
@@ -30,16 +32,22 @@ fn config(names: &[&str]) -> Config {
     }
 }
 
-/// 3 コマンド、出力欄の高さ 5 行。
+/// 3 コマンド、出力欄の高さ 5 行。時刻は `app.now()` を基準に `set_now` で進める。
 fn app() -> App {
-    let mut app = App::new("runs test", &config(&["build", "test", "serve"]));
+    let mut app = App::new(
+        "runs test",
+        &config(&["build", "test", "serve"]),
+        Instant::now(),
+    );
     app.set_output_height(5);
     app
 }
 
 /// イベントループと同じ手順（イベント → Action → 状態）で 1 件処理する。
-fn feed(app: &mut App, event: &Event) -> Option<Effect> {
-    action_for(event).and_then(|action| app.apply(action))
+fn feed(app: &mut App, event: &Event) -> Vec<Effect> {
+    action_for(event)
+        .map(|action| app.apply(action))
+        .unwrap_or_default()
 }
 
 fn quits_on(event: &Event) -> bool {
@@ -61,10 +69,17 @@ fn exit_status(code: i32) -> ExitStatus {
     }
 }
 
-fn output(id: usize, text: &str) -> RunnerEvent {
+fn output(run: RunId, text: &str) -> RunnerEvent {
     RunnerEvent::Output {
-        id,
+        run,
         bytes: text.as_bytes().to_vec(),
+    }
+}
+
+fn exited(run: RunId, code: i32) -> RunnerEvent {
+    RunnerEvent::Exited {
+        run,
+        status: exit_status(code),
     }
 }
 
@@ -72,6 +87,29 @@ fn selected_lines(app: &App) -> Vec<&str> {
     app.selected_command()
         .map(|c| c.output().lines().collect())
         .unwrap_or_default()
+}
+
+fn starts(effects: &[Effect]) -> Vec<RunId> {
+    effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Start { run, .. } => Some(*run),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 選択中のコマンドを実行し、採番された run を返す。
+fn run_selected(app: &mut App) -> RunId {
+    let effects = app.apply(Action::Run);
+    match effects.as_slice() {
+        [Effect::Start { run, .. }] => *run,
+        other => panic!("Start が 1 つ返るはずが {other:?}"),
+    }
+}
+
+fn advance(app: &mut App, seconds: u64) {
+    app.set_now(app.now() + Duration::from_secs(seconds));
 }
 
 // --- #1 からの挙動（変えない） -------------------------------------------------
@@ -179,6 +217,7 @@ fn keys_map_to_actions() {
         (KeyCode::Char('j'), Action::SelectNext),
         (KeyCode::Enter, Action::Run),
         (KeyCode::Char('s'), Action::Stop),
+        (KeyCode::Char('r'), Action::Reload),
         (KeyCode::PageUp, Action::PageUp),
         (KeyCode::PageDown, Action::PageDown),
         (KeyCode::End, Action::ScrollToEnd),
@@ -218,7 +257,7 @@ fn lists_commands_in_config_order() {
 fn select_moves_and_stops_at_ends() {
     let mut app = app();
 
-    assert_eq!(app.apply(Action::SelectPrev), None);
+    assert!(app.apply(Action::SelectPrev).is_empty());
     assert_eq!(app.selected(), 0);
 
     app.apply(Action::SelectNext);
@@ -232,6 +271,13 @@ fn select_moves_and_stops_at_ends() {
     assert_eq!(app.selected(), 1);
 }
 
+#[test]
+fn command_names_are_sanitized() {
+    let app = App::new("t", &config(&["evil\u{1b}]0;x\u{7}name"]), Instant::now());
+
+    assert_eq!(app.commands()[0].name(), "evilname");
+}
+
 // --- 実行と停止 ------------------------------------------------------------------
 
 #[test]
@@ -239,29 +285,41 @@ fn run_marks_running_and_requests_start() {
     let mut app = app();
     app.apply(Action::SelectNext);
 
-    let effect = app.apply(Action::Run);
+    let effects = app.apply(Action::Run);
 
-    assert_eq!(effect, Some(Effect::Start(1)));
+    assert_eq!(
+        effects,
+        [Effect::Start {
+            run: 1,
+            spec: app.commands()[1].spec().clone()
+        }]
+    );
     assert_eq!(app.commands()[1].state(), CommandState::Running);
+    assert_eq!(app.commands()[1].run(), Some(1));
     assert_eq!(app.commands()[0].state(), CommandState::Idle);
 }
 
 #[test]
-fn run_on_running_is_noop() {
+fn run_allocates_increasing_run_ids() {
     let mut app = app();
-    app.apply(Action::Run);
 
-    assert_eq!(app.apply(Action::Run), None);
+    let first = run_selected(&mut app);
+    app.on_runner_event(exited(first, 0));
+    let second = run_selected(&mut app);
+    app.apply(Action::SelectNext);
+    let third = run_selected(&mut app);
+
+    assert_eq!((first, second, third), (1, 2, 3));
 }
 
 #[test]
 fn stop_requests_only_when_running() {
     let mut app = app();
 
-    assert_eq!(app.apply(Action::Stop), None);
+    assert!(app.apply(Action::Stop).is_empty());
 
-    app.apply(Action::Run);
-    assert_eq!(app.apply(Action::Stop), Some(Effect::Stop(0)));
+    let run = run_selected(&mut app);
+    assert_eq!(app.apply(Action::Stop), [Effect::Stop(run)]);
     // 停止要求中も、通知が来るまでは実行中のまま
     assert_eq!(app.commands()[0].state(), CommandState::Running);
 }
@@ -269,12 +327,9 @@ fn stop_requests_only_when_running() {
 #[test]
 fn exited_sets_code() {
     let mut app = app();
-    app.apply(Action::Run);
+    let run = run_selected(&mut app);
 
-    app.on_runner_event(RunnerEvent::Exited {
-        id: 0,
-        status: exit_status(3),
-    });
+    app.on_runner_event(exited(run, 3));
 
     assert_eq!(
         app.commands()[0].state(),
@@ -285,14 +340,11 @@ fn exited_sets_code() {
 #[test]
 fn exited_after_stop_request_is_stopped() {
     let mut app = app();
-    app.apply(Action::Run);
+    let run = run_selected(&mut app);
     app.apply(Action::Stop);
 
     // Windows の taskkill は終了コード 1 で終わらせる。停止を頼んだのだから「停止」と見せる
-    app.on_runner_event(RunnerEvent::Exited {
-        id: 0,
-        status: exit_status(1),
-    });
+    app.on_runner_event(exited(run, 1));
 
     assert_eq!(app.commands()[0].state(), CommandState::Stopped);
 }
@@ -302,11 +354,11 @@ fn exited_after_stop_request_is_stopped() {
 fn signal_exit_is_stopped() {
     use std::os::unix::process::ExitStatusExt;
     let mut app = app();
-    app.apply(Action::Run);
+    let run = run_selected(&mut app);
 
     // 停止を頼んでいなくても、シグナルで終わったら「停止」
     app.on_runner_event(RunnerEvent::Exited {
-        id: 0,
+        run,
         status: ExitStatus::from_raw(15),
     });
 
@@ -316,10 +368,10 @@ fn signal_exit_is_stopped() {
 #[test]
 fn spawn_failed_sets_state_and_message() {
     let mut app = app();
-    app.apply(Action::Run);
+    let run = run_selected(&mut app);
 
     app.on_runner_event(RunnerEvent::SpawnFailed {
-        id: 0,
+        run,
         message: "failed to start \"zsh\": not found".to_owned(),
     });
 
@@ -328,18 +380,33 @@ fn spawn_failed_sets_state_and_message() {
 }
 
 #[test]
-fn rerun_clears_output() {
+fn stop_failed_keeps_running_and_shows_reason() {
     let mut app = app();
-    app.apply(Action::Run);
-    app.on_runner_event(output(0, "first run"));
-    app.on_runner_event(RunnerEvent::Exited {
-        id: 0,
-        status: exit_status(0),
+    let run = run_selected(&mut app);
+    app.apply(Action::Stop);
+
+    app.on_runner_event(RunnerEvent::StopFailed {
+        run,
+        message: "failed to run kill: not found".to_owned(),
     });
 
-    let effect = app.apply(Action::Run);
+    assert_eq!(app.commands()[0].state(), CommandState::Running);
+    assert_eq!(
+        selected_lines(&app),
+        ["runs: failed to stop: failed to run kill: not found"]
+    );
+}
 
-    assert_eq!(effect, Some(Effect::Start(0)));
+#[test]
+fn rerun_clears_output() {
+    let mut app = app();
+    let run = run_selected(&mut app);
+    app.on_runner_event(output(run, "first run"));
+    app.on_runner_event(exited(run, 0));
+
+    let effects = app.apply(Action::Run);
+
+    assert_eq!(starts(&effects), [2]);
     assert_eq!(app.commands()[0].state(), CommandState::Running);
     assert!(selected_lines(&app).is_empty());
 }
@@ -347,9 +414,15 @@ fn rerun_clears_output() {
 #[test]
 fn output_goes_to_its_command() {
     let mut app = app();
+    app.apply(Action::SelectNext);
+    let test_run = run_selected(&mut app);
+    app.apply(Action::SelectNext);
+    let serve_run = run_selected(&mut app);
+    app.apply(Action::SelectPrev);
+    app.apply(Action::SelectPrev);
 
-    app.on_runner_event(output(1, "from test"));
-    app.on_runner_event(output(2, "from serve"));
+    app.on_runner_event(output(test_run, "from test"));
+    app.on_runner_event(output(serve_run, "from serve"));
 
     assert!(selected_lines(&app).is_empty());
     app.apply(Action::SelectNext);
@@ -359,40 +432,282 @@ fn output_goes_to_its_command() {
 }
 
 #[test]
-fn events_for_unknown_id_are_ignored() {
+fn events_for_stale_run_are_ignored() {
     let mut app = app();
+    let old = run_selected(&mut app);
+    app.on_runner_event(exited(old, 0));
+    let new = run_selected(&mut app);
 
+    // 前回の実行の遅れた出力・終了は、いまの実行に混ざらない
+    app.on_runner_event(output(old, "late line"));
+    app.on_runner_event(exited(old, 7));
     app.on_runner_event(output(99, "nowhere"));
-    app.on_runner_event(RunnerEvent::Exited {
-        id: 99,
-        status: exit_status(0),
-    });
 
-    assert!(app.commands().iter().all(|c| c.output().len() == 0));
+    assert_eq!(app.commands()[0].run(), Some(new));
+    assert_eq!(app.commands()[0].state(), CommandState::Running);
+    assert!(selected_lines(&app).is_empty());
 }
 
 #[test]
 fn output_is_sanitized() {
     let mut app = app();
+    let run = run_selected(&mut app);
 
-    app.on_runner_event(output(0, "\x1b[31mred\x1b[0m\x07"));
+    app.on_runner_event(output(run, "\x1b[31mred\x1b[0m\x07"));
 
     assert_eq!(selected_lines(&app), ["red?"]);
 }
 
+// --- 時刻 ------------------------------------------------------------------------
+
+#[test]
+fn elapsed_while_running() {
+    let mut app = app();
+    assert_eq!(app.commands()[0].elapsed(app.now()), None);
+
+    run_selected(&mut app);
+    advance(&mut app, 12);
+
+    assert_eq!(
+        app.commands()[0].elapsed(app.now()),
+        Some(Duration::from_secs(12))
+    );
+    assert_eq!(app.commands()[0].ago(app.now()), None);
+    assert_eq!(app.commands()[0].took(), None);
+}
+
+#[test]
+fn ago_and_took_after_exit() {
+    let mut app = app();
+    let run = run_selected(&mut app);
+    advance(&mut app, 72);
+    app.on_runner_event(exited(run, 0));
+    advance(&mut app, 180);
+
+    let command = &app.commands()[0];
+    assert_eq!(command.elapsed(app.now()), None);
+    assert_eq!(command.took(), Some(Duration::from_secs(72)));
+    assert_eq!(command.ago(app.now()), Some(Duration::from_secs(180)));
+}
+
+#[test]
+fn needs_tick_only_after_first_run() {
+    let mut app = app();
+    assert!(!app.needs_tick());
+
+    let run = run_selected(&mut app);
+    assert!(app.needs_tick());
+
+    app.on_runner_event(exited(run, 0));
+    assert!(app.needs_tick());
+}
+
+// --- 停止して再実行 ----------------------------------------------------------------
+
+#[test]
+fn enter_on_running_requests_stop_and_restart() {
+    let mut app = app();
+    let run = run_selected(&mut app);
+    app.on_runner_event(output(run, "old output"));
+
+    let effects = app.apply(Action::Run);
+
+    assert_eq!(effects, [Effect::Stop(run)]);
+    assert!(app.commands()[0].restart_pending());
+    assert_eq!(app.commands()[0].state(), CommandState::Running);
+    // 終了が届くまで出力は残る
+    assert_eq!(selected_lines(&app), ["old output"]);
+}
+
+#[test]
+fn restart_starts_new_run_after_exit() {
+    let mut app = app();
+    let run = run_selected(&mut app);
+    app.on_runner_event(output(run, "old output"));
+    app.apply(Action::Run);
+    advance(&mut app, 3);
+
+    let effects = app.on_runner_event(exited(run, 1));
+
+    assert_eq!(starts(&effects), [run + 1]);
+    let command = &app.commands()[0];
+    assert_eq!(command.run(), Some(run + 1));
+    assert_eq!(command.state(), CommandState::Running);
+    assert!(!command.restart_pending());
+    assert_eq!(command.elapsed(app.now()), Some(Duration::ZERO));
+    assert!(selected_lines(&app).is_empty());
+}
+
+#[test]
+fn second_enter_while_restarting_is_noop() {
+    let mut app = app();
+    let run = run_selected(&mut app);
+    app.apply(Action::Run);
+
+    assert!(app.apply(Action::Run).is_empty());
+
+    let effects = app.on_runner_event(exited(run, 0));
+    assert_eq!(starts(&effects).len(), 1);
+}
+
+#[test]
+fn stop_cancels_pending_restart() {
+    let mut app = app();
+    let run = run_selected(&mut app);
+    app.apply(Action::Run);
+
+    let effects = app.apply(Action::Stop);
+    assert_eq!(effects, [Effect::Stop(run)]);
+    assert!(!app.commands()[0].restart_pending());
+
+    let effects = app.on_runner_event(exited(run, 1));
+    assert!(effects.is_empty());
+    assert_eq!(app.commands()[0].state(), CommandState::Stopped);
+}
+
+#[test]
+fn stop_failed_keeps_pending_restart() {
+    let mut app = app();
+    let run = run_selected(&mut app);
+    app.apply(Action::Run);
+
+    app.on_runner_event(RunnerEvent::StopFailed {
+        run,
+        message: "boom".to_owned(),
+    });
+
+    assert!(app.commands()[0].restart_pending());
+    let effects = app.on_runner_event(exited(run, 1));
+    assert_eq!(starts(&effects).len(), 1);
+}
+
+// --- 再読み込み ------------------------------------------------------------------
+
+#[test]
+fn reload_action_returns_reload_effect() {
+    let mut app = app();
+
+    assert_eq!(app.apply(Action::Reload), [Effect::Reload]);
+}
+
+#[test]
+fn replace_config_keeps_same_names() {
+    let mut app = app();
+    app.apply(Action::SelectNext);
+    let run = run_selected(&mut app);
+    app.on_runner_event(output(run, "kept"));
+
+    // 順序を変え、test の command を書き換え、build を消し、deploy を足す
+    let mut new = config(&["serve", "test", "deploy"]);
+    new.commands[1].command = "cargo test --all".to_owned();
+    let effects = app.replace_config(&new);
+
+    assert!(effects.is_empty());
+    let names: Vec<_> = app.commands().iter().map(CommandView::name).collect();
+    assert_eq!(names, ["serve", "test", "deploy"]);
+    let test = &app.commands()[1];
+    assert_eq!(test.state(), CommandState::Running);
+    assert_eq!(test.run(), Some(run));
+    assert_eq!(test.spec().command, "cargo test --all");
+    assert_eq!(test.output().lines().collect::<Vec<_>>(), ["kept"]);
+    assert_eq!(app.commands()[2].state(), CommandState::Idle);
+}
+
+#[test]
+fn replace_config_stops_removed_running() {
+    let mut app = app();
+    let build_run = run_selected(&mut app);
+    app.apply(Action::SelectNext);
+    let test_run = run_selected(&mut app);
+    app.on_runner_event(exited(test_run, 0));
+
+    // build は実行中のまま消える → Stop。test は終わっているので何も無い
+    let effects = app.replace_config(&config(&["serve"]));
+
+    assert_eq!(effects, [Effect::Stop(build_run)]);
+    assert_eq!(app.commands().len(), 1);
+    // 消えたコマンドの通知は無視される
+    assert!(app.on_runner_event(exited(build_run, 1)).is_empty());
+}
+
+#[test]
+fn replace_config_moves_selection() {
+    let mut app = app();
+    app.apply(Action::SelectNext);
+    app.apply(Action::SelectNext);
+    assert_eq!(app.commands()[app.selected()].name(), "serve");
+
+    app.replace_config(&config(&["serve", "build"]));
+    assert_eq!(app.selected(), 0);
+    assert_eq!(app.commands()[0].name(), "serve");
+
+    // 選択中が消えたら先頭
+    app.replace_config(&config(&["x", "y"]));
+    assert_eq!(app.selected(), 0);
+}
+
+#[test]
+fn replace_config_drops_pending_restart_of_removed() {
+    let mut app = app();
+    let run = run_selected(&mut app);
+    app.apply(Action::Run);
+    assert!(app.commands()[0].restart_pending());
+
+    let effects = app.replace_config(&config(&["test"]));
+
+    assert_eq!(effects, [Effect::Stop(run)]);
+    // 停止の通知が来ても再実行しない
+    assert!(app.on_runner_event(exited(run, 1)).is_empty());
+}
+
+#[test]
+fn replace_config_with_empty_list_selects_nothing() {
+    let mut app = app();
+
+    app.replace_config(&config(&[]));
+
+    assert_eq!(app.selected(), 0);
+    assert!(app.selected_command().is_none());
+    assert!(app.apply(Action::Run).is_empty());
+}
+
+// --- 通知 ------------------------------------------------------------------------
+
+#[test]
+fn notice_is_cleared_by_next_action() {
+    let mut app = app();
+    assert_eq!(app.notice(), None);
+
+    app.set_notice("reloaded runs.toml (3 commands)");
+    assert_eq!(app.notice(), Some("reloaded runs.toml (3 commands)"));
+
+    app.apply(Action::SelectNext);
+    assert_eq!(app.notice(), None);
+}
+
+#[test]
+fn notice_is_sanitized_to_one_line() {
+    let mut app = app();
+
+    app.set_notice("reload failed: invalid \x1b[31mruns.toml\x1b[0m\nTOML parse error at line 1");
+
+    assert_eq!(app.notice(), Some("reload failed: invalid runs.toml"));
+}
+
 // --- スクロール ------------------------------------------------------------------
 
-fn app_with_lines(count: usize) -> App {
+fn app_with_lines(count: usize) -> (App, RunId) {
     let mut app = app();
+    let run = run_selected(&mut app);
     for i in 1..=count {
-        app.on_runner_event(output(0, &format!("line {i}")));
+        app.on_runner_event(output(run, &format!("line {i}")));
     }
-    app
+    (app, run)
 }
 
 #[test]
 fn follows_tail_by_default() {
-    let app = app_with_lines(20);
+    let (app, _) = app_with_lines(20);
 
     assert_eq!(app.scroll(), Scroll::Follow);
     // 高さ 5 なので 16..=20 行目が見える
@@ -401,7 +716,7 @@ fn follows_tail_by_default() {
 
 #[test]
 fn page_up_leaves_follow() {
-    let mut app = app_with_lines(20);
+    let (mut app, _) = app_with_lines(20);
 
     app.apply(Action::PageUp);
     assert_eq!(app.scroll(), Scroll::At(10));
@@ -415,7 +730,7 @@ fn page_up_leaves_follow() {
 
 #[test]
 fn page_down_returns_to_follow_at_the_end() {
-    let mut app = app_with_lines(20);
+    let (mut app, _) = app_with_lines(20);
     app.apply(Action::PageUp);
     app.apply(Action::PageUp);
     assert_eq!(app.scroll(), Scroll::At(5));
@@ -429,7 +744,7 @@ fn page_down_returns_to_follow_at_the_end() {
 
 #[test]
 fn end_returns_to_follow() {
-    let mut app = app_with_lines(20);
+    let (mut app, _) = app_with_lines(20);
     app.apply(Action::PageUp);
 
     app.apply(Action::ScrollToEnd);
@@ -439,10 +754,10 @@ fn end_returns_to_follow() {
 
 #[test]
 fn new_output_does_not_move_while_scrolled() {
-    let mut app = app_with_lines(20);
+    let (mut app, run) = app_with_lines(20);
     app.apply(Action::PageUp);
 
-    app.on_runner_event(output(0, "line 21"));
+    app.on_runner_event(output(run, "line 21"));
 
     assert_eq!(app.scroll(), Scroll::At(10));
     assert_eq!(app.visible_range(), 10..15);
@@ -450,7 +765,7 @@ fn new_output_does_not_move_while_scrolled() {
 
 #[test]
 fn page_up_with_few_lines_stays_at_top() {
-    let mut app = app_with_lines(3);
+    let (mut app, _) = app_with_lines(3);
 
     app.apply(Action::PageUp);
 
@@ -460,7 +775,7 @@ fn page_up_with_few_lines_stays_at_top() {
 
 #[test]
 fn selecting_another_command_resets_scroll() {
-    let mut app = app_with_lines(20);
+    let (mut app, _) = app_with_lines(20);
     app.apply(Action::PageUp);
 
     app.apply(Action::SelectNext);
@@ -470,7 +785,7 @@ fn selecting_another_command_resets_scroll() {
 
 #[test]
 fn zero_height_does_not_panic() {
-    let mut app = app_with_lines(20);
+    let (mut app, _) = app_with_lines(20);
     app.set_output_height(0);
 
     app.apply(Action::PageUp);
@@ -480,33 +795,8 @@ fn zero_height_does_not_panic() {
 }
 
 #[test]
-fn stop_failed_keeps_running_and_shows_reason() {
-    let mut app = app();
-    app.apply(Action::Run);
-    app.apply(Action::Stop);
-
-    app.on_runner_event(RunnerEvent::StopFailed {
-        id: 0,
-        message: "failed to run kill: not found".to_owned(),
-    });
-
-    assert_eq!(app.commands()[0].state(), CommandState::Running);
-    assert_eq!(
-        selected_lines(&app),
-        ["runs: failed to stop: failed to run kill: not found"]
-    );
-}
-
-#[test]
-fn command_names_are_sanitized() {
-    let app = App::new("t", &config(&["evil\u{1b}]0;x\u{7}name"]));
-
-    assert_eq!(app.commands()[0].name(), "evilname");
-}
-
-#[test]
 fn scroll_position_follows_dropped_lines() {
-    let mut app = app_with_lines(crate::output::DEFAULT_LIMIT);
+    let (mut app, run) = app_with_lines(crate::output::DEFAULT_LIMIT);
     app.apply(Action::PageUp);
     app.apply(Action::PageUp);
     let Scroll::At(first) = app.scroll() else {
@@ -518,8 +808,8 @@ fn scroll_position_follows_dropped_lines() {
         .collect();
 
     // 上限に達した後の新しい行で先頭が捨てられても、見えている行は変わらない
-    app.on_runner_event(output(0, "overflow 1"));
-    app.on_runner_event(output(0, "overflow 2"));
+    app.on_runner_event(output(run, "overflow 1"));
+    app.on_runner_event(output(run, "overflow 2"));
 
     assert_eq!(app.scroll(), Scroll::At(first - 2));
     assert_eq!(selected_lines(&app)[app.visible_range()].to_vec(), visible);
