@@ -32,6 +32,12 @@
   `shows_time_column` と `header_shows_elapsed_while_running` → `renders_list_and_output_at_80x24` に含む、`output_height_excludes_header` → `layout_reserves_rows_for_header_and_help`）。
   証明の節を実態に直した。層 4 の「`r` 直後の残存」「pid の変化」も疑似端末では見ていなかったので、証明の節を直した
 
+- **Windows Terminal での実機確認**: 2026-10-07 にユーザーが手動で 7 項目を確認し、すべて期待どおりだった
+  （経過と `took`／実行中のまま `r` で再読み込みと通知／壊れた設定で `reload failed`／`Enter` で停止して再実行、`tasklist` の `ping` が 1 行／
+  設定から消して `r` で停止、`tasklist` に残らない／待機中の CPU が 0% 近く／`q` で終了）。
+  途中で 2 点判明: `timeout /t 3` は stdin が無いと即終了する（#5 の懸念点 6 のとおり。確認手順を `ping -n 4` に変更）、
+  `ping` の日本語出力が CP932 で化ける（#5 の懸念点 4 で許容したが、日常のコマンドで起きるので #8 として起票）
+
 ## 変更するファイル
 
 新規
