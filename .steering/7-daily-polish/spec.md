@@ -55,9 +55,9 @@
 |---|---|
 | `src/runner.rs` | `CommandId` → `RunId`（`u64`）。`start(run, spec)` / `stop(run)`。`set_shell(Vec<String>)` を追加。それ以外は変えない |
 | `src/app.rs` | `CommandView` に `spec`（名前・コマンド・cwd）、`run: Option<RunId>`、`started_at` / `finished_at`、`restart_pending` を追加。`App` に `now`、`next_run`、`notice` を追加。`Action::Reload`、`Effect::Start { run, spec }` / `Stop(run)` / `Reload`。`replace_config(&Config) -> Vec<Effect>` |
-| `src/ui.rs` | 一覧に時間の列、出力欄の見出し行、最下行の通知。`layout` の出力欄は見出し 1 行を除いた高さ |
+| `src/ui.rs` | 一覧に時間の列、出力欄の見出し行（`Panes.header`。右ペインを `[Length(1), Fill(1)]` で分ける）、最下行の通知。`layout().output` は見出しを除いた矩形 |
 | `src/tui.rs` | 毎秒の描画判定、`Effect::Reload` で `config::load_file(path)` → `app.replace_config` → 返った `Effect` を処理、`Effect::Start` に `spec` を使う |
-| `src/config.rs` | `Config` に `path: PathBuf`（読んだファイル）を追加。`load_file(&Path) -> Result<Config>` を切り出す |
+| `src/config.rs` | `Config` に `path: PathBuf`（読んだファイル）を追加。`parse` は `root.join(FILE_NAME)` を入れ、`load_file(&Path) -> Result<Config>` が実際のパスで上書きする |
 | `src/output.rs` | 変更なし |
 | `src/main.rs` | `tui::run(app, config)` の引数はそのまま（`shell` と `path` の初期値に使う） |
 | `src/timefmt.rs`（新規） | `format_elapsed(Duration) -> String`（`12s` / `1m 12s` / `1h 2m` / `3d 4h`）、`format_ago(Duration) -> String`（`5s ago` / `3m ago` / `2h ago` / `1d ago`） |
@@ -88,7 +88,7 @@ impl App {
     pub fn apply(&mut self, action: Action) -> Vec<Effect>;        // Reload は Effect::Reload を返すだけ
     pub fn on_runner_event(&mut self, event: RunnerEvent) -> Vec<Effect>;   // 再実行の Start を返しうる
     pub fn replace_config(&mut self, config: &Config) -> Vec<Effect>;       // 消えた実行中のコマンドの Stop を返す
-    pub fn set_notice(&mut self, text: impl Into<String>);         // 最下行の通知。次の Action で消える
+    pub fn set_notice(&mut self, text: impl Into<String>);         // 最下行の通知（sanitize した 1 行目だけ保持）。apply の先頭で消える
     pub fn notice(&self) -> Option<&str>;
     pub fn needs_tick(&self) -> bool;                              // 時間表示があるか（実行中、または finished_at がある）
 }
