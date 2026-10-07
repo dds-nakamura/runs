@@ -115,10 +115,13 @@ fn utf8_encoding_means_no_fallback() {
 
 #[test]
 fn line_incompatible_encodings_are_errors() {
-    for label in ["utf-16le", "utf-16be", "iso-2022-jp", "iso-2022-kr"] {
+    // UTF-16 と ISO-2022-JP は「行単位では扱えない」経路、replacement 系（iso-2022-kr）は「未知のラベル」経路
+    for label in ["utf-16le", "utf-16be", "iso-2022-jp"] {
         let message = parse_err(&format!("encoding = \"{label}\"\n{MINIMAL}"));
-        assert!(message.contains("encoding"), "{label}: {message}");
+        assert!(message.contains("line-based"), "{label}: {message}");
     }
+    let message = parse_err(&format!("encoding = \"iso-2022-kr\"\n{MINIMAL}"));
+    assert!(message.contains("unknown `encoding`"), "{message}");
 }
 
 #[test]

@@ -20,7 +20,8 @@ command = \"cargo test\"";
 pub const OPTIONAL_KEYS: &str = "\
 Optional top-level keys:
   shell = [\"pwsh\", \"-NoProfile\", \"-Command\"]   # default: sh -c (Unix), cmd /S /C (Windows)
-  encoding = \"shift_jis\"                       # for output that is not UTF-8 (default: shift_jis on Windows, none elsewhere)
+  encoding = \"shift_jis\"                       # for output that is not UTF-8 (default: shift_jis on Windows, none elsewhere;
+                                               #  UTF-16 and ISO-2022-JP are not supported)
 Optional per-command key: cwd = \"web\"           # relative to runs.toml";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
