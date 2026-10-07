@@ -14,30 +14,30 @@ use std::time::{Duration, Instant};
 
 use crate::config::CommandSpec;
 
-/// `Config::commands` の添字。
-pub type CommandId = usize;
+/// 実行ごとに一意な番号。`App` が採番し、通知の宛先に使う（コマンドの添字ではないので、一覧が並び替わっても再実行してもずれない）。
+pub type RunId = u64;
 
 #[derive(Debug)]
 pub enum RunnerEvent {
     Started {
-        id: CommandId,
+        run: RunId,
     },
     /// 1 行分。末尾の改行（LF / CRLF）は含まない。stdout と stderr は区別しない
     Output {
-        id: CommandId,
+        run: RunId,
         bytes: Vec<u8>,
     },
     Exited {
-        id: CommandId,
+        run: RunId,
         status: ExitStatus,
     },
     SpawnFailed {
-        id: CommandId,
+        run: RunId,
         message: String,
     },
     /// 停止の手段（`kill` / `taskkill`）が失敗した。プロセスは動いたまま
     StopFailed {
-        id: CommandId,
+        run: RunId,
         message: String,
     },
 }
@@ -56,13 +56,15 @@ struct RunningProcess {
     child: Arc<Mutex<Child>>,
     /// 終了待ちスレッドが終了を確認したら true
     finished: Arc<AtomicBool>,
+    /// 停止を頼まれたら true。Unix では、シェルだけが先に終わっても孫が消えるまで `Exited` を送らない
+    stop_requested: Arc<AtomicBool>,
     waiter: JoinHandle<()>,
 }
 
 pub struct Runner {
     tx: Sender<RunnerEvent>,
     shell: Vec<String>,
-    running: HashMap<CommandId, RunningProcess>,
+    running: HashMap<RunId, RunningProcess>,
 }
 
 impl Runner {
@@ -79,34 +81,35 @@ impl Runner {
     }
 
     /// 起動する。失敗は `SpawnFailed` として通知する。実行中なら何もしない
-    pub fn start(&mut self, id: CommandId, spec: &CommandSpec) {
+    pub fn start(&mut self, run: RunId, spec: &CommandSpec) {
         self.reap();
-        if self.running.contains_key(&id) {
+        if self.running.contains_key(&run) {
             return;
         }
         match self.spawn(spec) {
             Ok(child) => {
-                self.send(RunnerEvent::Started { id });
-                let process = self.watch(id, child);
-                self.running.insert(id, process);
+                self.send(RunnerEvent::Started { run });
+                let process = self.watch(run, child);
+                self.running.insert(run, process);
             }
-            Err(message) => self.send(RunnerEvent::SpawnFailed { id, message }),
+            Err(message) => self.send(RunnerEvent::SpawnFailed { run, message }),
         }
     }
 
     /// 穏やかな停止を要求する。実際の終了は `Exited` で届く。
     /// Unix は TERM を送り、猶予の後にプロセスグループへ KILL。Windows は最初から強制終了
-    pub fn stop(&mut self, id: CommandId) {
+    pub fn stop(&mut self, run: RunId) {
         self.reap();
-        let Some(process) = self.running.get(&id) else {
+        let Some(process) = self.running.get(&run) else {
             return;
         };
+        process.stop_requested.store(true, Ordering::Release);
         if let Err(message) = terminate(process.pid) {
             // 外部コマンドが使えない。直接の子だけでも止める（孫は残る）
             let fallback = lock(&process.child).kill();
             if !process.is_finished() {
                 self.send(RunnerEvent::StopFailed {
-                    id,
+                    run,
                     message: match fallback {
                         Ok(()) => format!("{message}; killed the direct child only"),
                         Err(err) => format!("{message}; direct kill also failed: {err}"),
@@ -156,9 +159,14 @@ impl Runner {
         }
     }
 
+    /// 次の `start` から使うシェルを差し替える（設定の再読み込み用）。実行中のプロセスには影響しない
+    pub fn set_shell(&mut self, shell: Vec<String>) {
+        self.shell = shell;
+    }
+
     #[cfg(test)]
-    pub fn is_running(&self, id: CommandId) -> bool {
-        self.running.get(&id).is_some_and(|p| !p.is_finished())
+    pub fn is_running(&self, run: RunId) -> bool {
+        self.running.get(&run).is_some_and(|p| !p.is_finished())
     }
 
     fn spawn(&self, spec: &CommandSpec) -> Result<Child, String> {
@@ -191,7 +199,7 @@ impl Runner {
     }
 
     /// 出力と終了を見張るスレッドを立てる。
-    fn watch(&self, id: CommandId, mut child: Child) -> RunningProcess {
+    fn watch(&self, run: RunId, mut child: Child) -> RunningProcess {
         let pid = child.id();
         let streams: [Option<Box<dyn Read + Send>>; 2] = [
             child
@@ -206,14 +214,16 @@ impl Runner {
         let readers: Vec<JoinHandle<()>> = streams
             .into_iter()
             .flatten()
-            .map(|stream| spawn_reader(id, stream, self.tx.clone()))
+            .map(|stream| spawn_reader(run, stream, self.tx.clone()))
             .collect();
         let child = Arc::new(Mutex::new(child));
         let finished = Arc::new(AtomicBool::new(false));
+        let stop_requested = Arc::new(AtomicBool::new(false));
         let waiter = {
             let tx = self.tx.clone();
             let child = Arc::clone(&child);
             let finished = Arc::clone(&finished);
+            let stop_requested = Arc::clone(&stop_requested);
             thread::spawn(move || {
                 // ブロックする wait ではなくポーリングにして、Runner 側が Child::kill を使えるようにする
                 let result = loop {
@@ -231,12 +241,17 @@ impl Runner {
                 while Instant::now() < deadline && readers.iter().any(|r| !r.is_finished()) {
                     thread::sleep(POLL_INTERVAL);
                 }
+                // 停止を頼まれていたら、孫プロセスも含めて消えてから終了を伝える。
+                // そうしないと「停止して再実行」で、古いサーバーがポートを握ったまま新しいものが起動する（Unix）
+                if stop_requested.load(Ordering::Acquire) {
+                    wait_for_group_exit(pid, STOP_GRACE + FORCE_GRACE);
+                }
                 finished.store(true, Ordering::Release);
                 let event = match result {
-                    Ok(status) => RunnerEvent::Exited { id, status },
+                    Ok(status) => RunnerEvent::Exited { run, status },
                     // wait の失敗（ECHILD など）はまず起きない。状態としては「失敗」で見せる
                     Err(err) => RunnerEvent::SpawnFailed {
-                        id,
+                        run,
                         message: format!("failed to wait for the process: {err}"),
                     },
                 };
@@ -248,6 +263,7 @@ impl Runner {
             pid,
             child,
             finished,
+            stop_requested,
             waiter,
         }
     }
@@ -320,7 +336,7 @@ fn push_command_arg(command: &mut Command, _program: &str, text: &str) {
 
 /// 行ごとに `Output` を送る。パイプが閉じるか受信側が終わるまで。
 fn spawn_reader(
-    id: CommandId,
+    run: RunId,
     stream: impl Read + Send + 'static,
     tx: Sender<RunnerEvent>,
 ) -> JoinHandle<()> {
@@ -341,7 +357,7 @@ fn spawn_reader(
             }
             if tx
                 .send(RunnerEvent::Output {
-                    id,
+                    run,
                     bytes: line.clone(),
                 })
                 .is_err()
@@ -350,6 +366,21 @@ fn spawn_reader(
             }
         }
     })
+}
+
+/// プロセスグループが消えるまで待つ（上限付き）。Windows は `taskkill /T` が木ごと止めるので待たない。
+/// pgid が別のグループに再利用されていた場合は上限まで待ってしまうが、害は遅れだけ
+fn wait_for_group_exit(pid: u32, limit: Duration) {
+    if !cfg!(unix) {
+        return;
+    }
+    let deadline = Instant::now() + limit;
+    // シグナル 0 は送らずに存在だけを確かめる。グループに誰かいれば成功する
+    while Instant::now() < deadline
+        && run_quietly("kill", &["-s", "0", "--", &format!("-{pid}")]).is_ok()
+    {
+        thread::sleep(POLL_INTERVAL);
+    }
 }
 
 /// 穏やかに止める。Unix はプロセスグループへ TERM、Windows は木ごと強制終了（穏やかな手段が無い）。

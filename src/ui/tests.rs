@@ -1,17 +1,19 @@
 use std::path::PathBuf;
 use std::process::ExitStatus;
+use std::time::{Duration, Instant};
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 
 use super::*;
-use crate::app::{Action, App};
+use crate::app::{Action, App, Effect};
 use crate::config::{CommandSpec, Config};
-use crate::runner::RunnerEvent;
+use crate::runner::{RunId, RunnerEvent};
 
 fn config(names: &[&str]) -> Config {
     Config {
+        path: PathBuf::from("/proj/runs.toml"),
         root: PathBuf::from("/proj"),
         shell: vec!["sh".into(), "-c".into()],
         commands: names
@@ -38,25 +40,47 @@ fn exit_status(code: i32) -> ExitStatus {
     }
 }
 
-/// 3 コマンド: build は未実行、test は実行中で 30 行の出力、serve は exit 0。test を選択中。
+fn exited(run: RunId, code: i32) -> RunnerEvent {
+    RunnerEvent::Exited {
+        run,
+        status: exit_status(code),
+    }
+}
+
+fn new_app(title: &str, names: &[&str]) -> App {
+    App::new(title, &config(names), Instant::now())
+}
+
+/// 選択中のコマンドを実行し、採番された run を返す。
+fn run_selected(app: &mut App) -> RunId {
+    match app.apply(Action::Run).as_slice() {
+        [Effect::Start { run, .. }] => *run,
+        other => panic!("Start が 1 つ返るはずが {other:?}"),
+    }
+}
+
+fn advance(app: &mut App, seconds: u64) {
+    app.set_now(app.now() + Duration::from_secs(seconds));
+}
+
+/// 3 コマンド: build は未実行、serve は 2 秒かかって exit 0（12 秒前）、test は実行中 12 秒で 30 行の出力。test を選択中。
 /// タイトルはバージョンに依存しないよう固定する。
 fn sample_app() -> App {
-    let mut app = App::new("runs 1.2.3", &config(&["build", "test", "serve"]));
+    let mut app = new_app("runs 1.2.3", &["build", "test", "serve"]);
     app.apply(Action::SelectNext);
     app.apply(Action::SelectNext);
-    app.apply(Action::Run);
-    app.on_runner_event(RunnerEvent::Exited {
-        id: 2,
-        status: exit_status(0),
-    });
+    let serve = run_selected(&mut app);
+    advance(&mut app, 2);
+    app.on_runner_event(exited(serve, 0));
     app.apply(Action::SelectPrev);
-    app.apply(Action::Run);
+    let test = run_selected(&mut app);
     for i in 1..=30 {
         app.on_runner_event(RunnerEvent::Output {
-            id: 1,
+            run: test,
             bytes: format!("line {i}").into_bytes(),
         });
     }
+    advance(&mut app, 12);
     app
 }
 
@@ -72,27 +96,31 @@ fn render(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
     terminal
 }
 
-/// 80 桁の 1 行: 一覧 16 桁 + 区切り 1 桁 + 出力 63 桁。
-fn row(list: &str, output: &str) -> String {
-    format!("{list:<16} {output:<63}")
+/// 80 桁の 1 行: 一覧 24 桁（印 2 + 名前 5 + 1 + 状態 8 + 1 + 時間 7）+ 区切り 1 桁 + 右ペイン 55 桁。
+fn row(list: &str, right: &str) -> String {
+    format!("{list:<24} {right:<55}")
 }
 
-/// 63 桁。80 桁の画面では右端 10 桁にタイトル `runs 1.2.3` が入る
-const HELP: &str = "Up/Down select  Enter run  s stop  PgUp/PgDn/End scroll  q quit";
+/// 最下行: 左にキーの案内（はみ出した分は切る）、右端にタイトル。
+fn help_row(width: usize, title: &str) -> String {
+    let help_width = width - title.len();
+    format!("{HELP:<help_width$.help_width$}{title}")
+}
 
 #[test]
 fn renders_list_and_output_at_80x24() {
     let mut app = sample_app();
     let terminal = render(&mut app, 80, 24);
 
-    let mut expected = Vec::new();
-    expected.push(row("  build idle", "line 8"));
-    expected.push(row("> test  running", "line 9"));
-    expected.push(row("  serve exit 0", "line 10"));
+    let mut expected = vec![
+        row("  build idle", "test  running 12s"),
+        row("> test  running  12s", "line 9"),
+        row("  serve exit 0   12s ago", "line 10"),
+    ];
     for i in 11..=30 {
         expected.push(row("", &format!("line {i}")));
     }
-    expected.push(format!("{HELP:<70}runs 1.2.3"));
+    expected.push(help_row(80, "runs 1.2.3"));
     assert_eq!(expected.len(), 24);
     terminal.backend().assert_buffer_lines(expected);
 }
@@ -100,80 +128,130 @@ fn renders_list_and_output_at_80x24() {
 #[test]
 fn shows_offset_when_scrolled() {
     let mut app = sample_app();
-    // 出力欄は 23 行。PageUp で先頭 7 行目 → 0 行目から表示
+    // 出力欄は 22 行。追従では 9 行目から。PageUp で先頭から
     render(&mut app, 80, 24);
     app.apply(Action::PageUp);
     let terminal = render(&mut app, 80, 24);
 
-    let mut expected = Vec::new();
-    expected.push(row("  build idle", "line 1"));
-    expected.push(row("> test  running", "line 2"));
-    expected.push(row("  serve exit 0", "line 3"));
-    for i in 4..=23 {
+    let mut expected = vec![
+        row("  build idle", "test  running 12s"),
+        row("> test  running  12s", "line 1"),
+        row("  serve exit 0   12s ago", "line 2"),
+    ];
+    for i in 3..=22 {
         expected.push(row("", &format!("line {i}")));
     }
-    expected.push(format!("{HELP:<70}runs 1.2.3"));
+    expected.push(help_row(80, "runs 1.2.3"));
+    terminal.backend().assert_buffer_lines(expected);
+}
+
+#[test]
+fn header_shows_took_after_exit() {
+    let mut app = sample_app();
+    app.apply(Action::SelectNext);
+    let terminal = render(&mut app, 80, 24);
+
+    let mut expected = vec![
+        row("  build idle", "serve  exit 0  took 2s"),
+        row("  test  running  12s", ""),
+        row("> serve exit 0   12s ago", ""),
+    ];
+    expected.extend((3..23).map(|_| row("", "")));
+    expected.push(help_row(80, "runs 1.2.3"));
+    terminal.backend().assert_buffer_lines(expected);
+}
+
+#[test]
+fn header_shows_name_only_when_idle() {
+    let mut app = sample_app();
+    app.apply(Action::SelectPrev);
+    let terminal = render(&mut app, 80, 24);
+
+    let mut expected = vec![
+        row("> build idle", "build"),
+        row("  test  running  12s", ""),
+        row("  serve exit 0   12s ago", ""),
+    ];
+    expected.extend((3..23).map(|_| row("", "")));
+    expected.push(help_row(80, "runs 1.2.3"));
+    terminal.backend().assert_buffer_lines(expected);
+}
+
+#[test]
+fn notice_replaces_help_line() {
+    let mut app = sample_app();
+    app.set_notice("reloaded runs.toml (3 commands)");
+    let terminal = render(&mut app, 80, 24);
+
+    let mut expected = vec![
+        row("  build idle", "test  running 12s"),
+        row("> test  running  12s", "line 9"),
+        row("  serve exit 0   12s ago", "line 10"),
+    ];
+    for i in 11..=30 {
+        expected.push(row("", &format!("line {i}")));
+    }
+    expected.push(format!(
+        "{:<70}{}",
+        "reloaded runs.toml (3 commands)", "runs 1.2.3"
+    ));
     terminal.backend().assert_buffer_lines(expected);
 }
 
 #[test]
 fn shows_all_states() {
-    let mut app = App::new("t", &config(&["a", "b", "c", "d"]));
-    app.apply(Action::Run);
+    let mut app = new_app("t", &["a", "b", "c", "d"]);
+    let a = run_selected(&mut app);
     app.on_runner_event(RunnerEvent::SpawnFailed {
-        id: 0,
+        run: a,
         message: "boom".into(),
     });
     app.apply(Action::SelectNext);
-    app.apply(Action::Run);
+    let b = run_selected(&mut app);
     app.apply(Action::Stop);
-    app.on_runner_event(RunnerEvent::Exited {
-        id: 1,
-        status: exit_status(1),
-    });
+    app.on_runner_event(exited(b, 1));
     app.apply(Action::SelectNext);
-    app.apply(Action::Run);
-    app.on_runner_event(RunnerEvent::Exited {
-        id: 2,
-        status: exit_status(101),
-    });
+    let c = run_selected(&mut app);
+    app.on_runner_event(exited(c, 101));
     let terminal = render(&mut app, 30, 6);
 
+    // 一覧は 40% = 12 桁で、時間の列は切れる。右ペインは 17 桁
     terminal.backend().assert_buffer_lines([
-        "  a failed                    ",
+        "  a failed   c  exit 101  took",
         "  b stopped                   ",
         "> c exit 101                  ",
         "  d idle                      ",
         "                              ",
-        "Up/Down select  Enter run  s t",
+        &help_row(30, "t"),
     ]);
 }
 
 #[test]
 fn list_width_is_capped_at_40_percent() {
-    let app = App::new("t", &config(&["a-very-long-command-name-indeed"]));
+    let app = new_app("t", &["a-very-long-command-name-indeed"]);
 
     let panes = layout(Rect::new(0, 0, 40, 10), &app);
 
     assert_eq!(panes.list.width, 16);
-    assert_eq!(panes.output.x, 17);
-    assert_eq!(panes.output.width, 23);
+    assert_eq!(panes.header, Rect::new(17, 0, 23, 1));
+    assert_eq!(panes.output, Rect::new(17, 1, 23, 8));
 }
 
 #[test]
-fn layout_reserves_one_row_for_help() {
+fn layout_reserves_rows_for_header_and_help() {
     let app = sample_app();
 
     let panes = layout(Rect::new(0, 0, 80, 24), &app);
 
-    assert_eq!(panes.output.height, 23);
-    assert_eq!(panes.list.height, 23);
+    assert_eq!(panes.list, Rect::new(0, 0, 24, 23));
+    assert_eq!(panes.header, Rect::new(25, 0, 55, 1));
+    assert_eq!(panes.output, Rect::new(25, 1, 55, 22));
     assert_eq!(panes.help, Rect::new(0, 23, 80, 1));
 }
 
 #[test]
 fn does_not_panic_at_tiny_sizes() {
-    for (w, h) in [(0, 0), (1, 1), (1, 5), (5, 1), (0, 5), (5, 0)] {
+    for (w, h) in [(0, 0), (1, 1), (1, 5), (5, 1), (0, 5), (5, 0), (2, 2)] {
         let mut app = sample_app();
         render(&mut app, w, h);
         let panes = layout(Rect::new(0, 0, w, h), &app);
@@ -186,34 +264,74 @@ fn does_not_panic_at_tiny_sizes() {
 
 #[test]
 fn long_names_and_lines_are_truncated() {
-    let mut app = App::new("t", &config(&["0123456789abcdef"]));
-    app.apply(Action::Run);
+    let mut app = new_app("t", &["0123456789abcdef"]);
+    let run = run_selected(&mut app);
     app.on_runner_event(RunnerEvent::Output {
-        id: 0,
+        run,
         bytes: b"0123456789abcdefghij".to_vec(),
     });
     let terminal = render(&mut app, 20, 3);
 
-    // 一覧は 40% = 8 桁、区切り 1 桁、出力 11 桁。はみ出した分は末尾を切る。
-    // 最下行はキーの案内を 19 桁で切り、右端 1 桁にタイトル `t`
+    // 一覧は 40% = 8 桁。名前は最低 6 桁は出し（切ったので末尾は `~`）、右の列は切れる。右ペイン 11 桁
     terminal.backend().assert_buffer_lines([
-        "> 012345 0123456789a",
-        "                    ",
-        "Up/Down select  Entt",
+        "> 01234~ 0123456789a",
+        "         0123456789a",
+        &help_row(20, "t"),
     ]);
 }
 
 #[test]
 fn pads_fullwidth_names_by_display_width() {
-    let mut app = App::new("t", &config(&["テスト", "b"]));
+    let mut app = new_app("t", &["テスト", "b"]);
     app.apply(Action::SelectNext);
-    app.apply(Action::Run);
-    let terminal = render(&mut app, 45, 3);
+    run_selected(&mut app);
+    let terminal = render(&mut app, 70, 3);
 
-    // 名前の表示幅は 6。一覧は 2 + 6 + 1 + 8 = 17 桁（45 桁の 40% = 18 に収まる）で、状態の列が揃う
+    // 名前の表示幅は 6。一覧は 2 + 6 + 1 + 8 + 1 + 7 = 25 桁（70 桁の 40% = 28 に収まる）で、状態と時間の列が揃う。
+    // `{:<w$}` は文字数で埋めるので、全角を含む行は手で桁を合わせる（テスト = 全角 3 文字 = 6 桁）
     terminal.backend().assert_buffer_lines([
-        "  テスト idle                                ",
-        "> b      running                             ",
-        "Up/Down select  Enter run  s stop  PgUp/PgDnt",
+        format!("  テスト idle{:13}{:<44}", "", "b  running 0s"),
+        format!("> b      running  0s     {:<44}", ""),
+        help_row(70, "t"),
+    ]);
+}
+
+#[test]
+fn long_names_keep_status_and_time_columns() {
+    let mut app = new_app("runs 1.2.3", &["frontend-dev-server", "api"]);
+    run_selected(&mut app);
+    advance(&mut app, 12);
+    let terminal = render(&mut app, 80, 24);
+
+    // 一覧は 80 桁の 40% = 32 桁。名前は 32 - (2 + 1 + 8 + 1 + 7) = 13 桁に切られ（末尾は `~`）、状態と時間は残る
+    let mut expected = vec![
+        format!(
+            "{:<32} {:<47}",
+            "> frontend-dev~ running  12s", "frontend-dev-server  running 12s"
+        ),
+        format!("{:<32} {:<47}", "  api           idle", ""),
+    ];
+    expected.extend((2..23).map(|_| " ".repeat(80)));
+    expected.push(help_row(80, "runs 1.2.3"));
+    terminal.backend().assert_buffer_lines(expected);
+}
+
+/// Unix の終了コードは 8 ビットなので、大きなコードは Windows でしか起きない。
+#[cfg(windows)]
+#[test]
+fn huge_exit_code_does_not_shift_columns() {
+    let mut app = new_app("t", &["a", "b"]);
+    let run = run_selected(&mut app);
+    app.on_runner_event(exited(run, 1_000_000));
+    let terminal = render(&mut app, 60, 3);
+
+    // 一覧は 2 + 1 + 1 + 8 + 1 + 7 = 20 桁。8 桁に収まらない終了コードは一覧では `exit ?`、見出しに全文
+    terminal.backend().assert_buffer_lines([
+        format!(
+            "{:<20} {:<39}",
+            "> a exit ?   0s ago", "a  exit 1000000  took 0s"
+        ),
+        format!("{:<20} {:<39}", "  b idle", ""),
+        help_row(60, "t"),
     ]);
 }

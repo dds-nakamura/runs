@@ -1,8 +1,9 @@
 //! 端末の初期化・復元とイベントループ。実端末に触るのはこのモジュールだけ。
 
 use std::io::{self, IsTerminal, Write};
+use std::path::Path;
 use std::sync::mpsc::Receiver;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use ratatui::DefaultTerminal;
@@ -10,12 +11,14 @@ use ratatui::crossterm::event;
 use ratatui::layout::Rect;
 
 use crate::app::{self, App, Effect};
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::runner::{Runner, RunnerEvent};
 use crate::ui;
 
 /// 入力を待つ間隔。この間隔で子プロセスの通知も取り込む
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// 時間の表示があるとき、描き直す間隔
+const TICK: Duration = Duration::from_secs(1);
 /// 終了時に、実行中のコマンドが穏やかに止まるのを待つ猶予
 const STOP_GRACE: Duration = Duration::from_secs(2);
 
@@ -70,7 +73,7 @@ pub fn run(app: &mut App, config: &Config) -> Result<()> {
 
     let (mut runner, rx) = Runner::new(config.shell.clone());
     let mut guard = TerminalGuard::new()?;
-    let result = event_loop(&mut guard.terminal, app, config, &mut runner, &rx);
+    let result = event_loop(&mut guard.terminal, app, &config.path, &mut runner, &rx);
     // 端末を復元する前に子プロセスを片付ける（kill / taskkill の出力は捨てているので画面は崩れない）
     runner.stop_all_and_wait(STOP_GRACE);
     drop(guard);
@@ -80,12 +83,20 @@ pub fn run(app: &mut App, config: &Config) -> Result<()> {
 fn event_loop(
     terminal: &mut DefaultTerminal,
     app: &mut App,
-    config: &Config,
+    config_path: &Path,
     runner: &mut Runner,
     rx: &Receiver<RunnerEvent>,
 ) -> Result<()> {
     let mut dirty = true;
+    let mut last_draw = Instant::now();
     loop {
+        // 入力・通知の処理でも現在時刻を使う（開始・終了時刻の記録）ので、描画の有無によらず毎ループ渡す
+        let now = Instant::now();
+        app.set_now(now);
+        // 経過時間を見せている間は 1 秒ごとに描き直す。何も実行していなければ入力か通知があるときだけ
+        if app.needs_tick() && now.saturating_duration_since(last_draw) >= TICK {
+            dirty = true;
+        }
         if dirty {
             let size = terminal.size().context("failed to get the terminal size")?;
             let panes = ui::layout(Rect::new(0, 0, size.width, size.height), app);
@@ -93,34 +104,60 @@ fn event_loop(
             terminal
                 .draw(|frame| ui::draw(frame, app))
                 .context("failed to draw the screen")?;
+            last_draw = now;
             dirty = false;
         }
 
         // 入力が無ければ POLL_INTERVAL で戻り、子プロセスの通知だけを取り込む（リサイズもイベントとして届く）
         if event::poll(POLL_INTERVAL).context("failed to poll terminal events")? {
             let event = event::read().context("failed to read a terminal event")?;
+            // 通知はどのキーでも消える（リサイズでは消えない）
+            if matches!(&event, event::Event::Key(key) if key.kind == event::KeyEventKind::Press) {
+                app.clear_notice();
+            }
             if let Some(action) = app::action_for(&event) {
-                match app.apply(action) {
-                    Some(Effect::Start(id)) => {
-                        if let Some(spec) = config.commands.get(id) {
-                            runner.start(id, spec);
-                        }
-                    }
-                    Some(Effect::Stop(id)) => runner.stop(id),
-                    None => {}
-                }
+                // 開始時刻の記録に使うので、poll で待った分だけ古くなった時刻を取り直す
+                app.set_now(Instant::now());
+                let effects = app.apply(action);
+                handle_effects(effects, app, runner, config_path);
             }
             dirty = true;
         }
 
-        // 溜まった分をまとめて取り込み、描画は 1 回にする
+        // 溜まった分をまとめて取り込み、描画は 1 回にする（終了時刻の記録に使うので時刻を取り直す）
+        app.set_now(Instant::now());
         while let Ok(event) = rx.try_recv() {
-            app.on_runner_event(event);
+            let effects = app.on_runner_event(event);
+            handle_effects(effects, app, runner, config_path);
             dirty = true;
         }
 
         if app.should_quit() {
             return Ok(());
+        }
+    }
+}
+
+/// `App` が頼んだことを実行する。プロセスは `runner`、ファイルは `config` に任せる
+fn handle_effects(effects: Vec<Effect>, app: &mut App, runner: &mut Runner, config_path: &Path) {
+    for effect in effects {
+        match effect {
+            Effect::Start { run, spec } => runner.start(run, &spec),
+            Effect::Stop(run) => runner.stop(run),
+            Effect::Reload => match config::load_file(config_path) {
+                Ok(new) => {
+                    runner.set_shell(new.shell.clone());
+                    // 消えた実行中のコマンドの Stop が返る
+                    let stops = app.replace_config(&new);
+                    handle_effects(stops, app, runner, config_path);
+                    let count = new.commands.len();
+                    let noun = if count == 1 { "command" } else { "commands" };
+                    app.set_notice(format!("reloaded {} ({count} {noun})", config::FILE_NAME));
+                }
+                // 文脈（`invalid <絶対パス>`）を付けると 80 桁で理由が切れるので、原因だけを出す。
+                // 設定ファイルの引用が含まれうるが、set_notice が 1 行目だけを無害化して保持する
+                Err(err) => app.set_notice(format!("reload failed: {}", err.root_cause())),
+            },
         }
     }
 }

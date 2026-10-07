@@ -44,13 +44,18 @@ clippy 警告を `#[allow(...)]` で黙らせる場合は理由コメント必�
   - `src/main.rs`: 引数の解釈 → 設定の読み込み → `tui::run`。エラーの表示、終了コード（0 = 正常、1 = 実行時エラー、2 = 引数の誤り）。`#![forbid(unsafe_code)]`
   - `src/cli.rs`: 引数の解釈（手書き。`Command`）、バージョンと使い方の文字列
   - `src/config.rs`: `runs.toml` の探索（カレントから親へ）・読み込み・検証（`Config` / `CommandSpec`）。無い・壊れていれば TUI を起動せず終了コード 1
-  - `src/app.rs`: 状態 `App`（コマンドごとの状態・出力・選択・スクロール）、`Action`、キーバインド（`action_for`）、更新（`App::apply` → `Effect`、`on_runner_event`）。
-    プロセスには触らず、`Effect::Start / Stop` で `tui` に頼む
+  - `src/app.rs`: 状態 `App`（コマンドごとの状態・出力・選択・スクロール・開始 / 終了時刻）、`Action`、キーバインド（`action_for`）、
+    更新（`App::apply` / `on_runner_event` → `Vec<Effect>`、`replace_config`）。プロセスにもファイルにも触らず、`Effect::Start / Stop / Reload` で `tui` に頼む。
+    現在時刻は `set_now` で外から受け取る（中で `Instant::now()` を呼ばない。テストで時間を進めるため）
   - `src/output.rs`: 出力行の保持（上限 10,000 行）と無害化（`sanitize`: ESC シーケンス・制御文字の除去）
-  - `src/runner.rs`: 子プロセスの起動（シェル経由）・出力の読み取りスレッド・停止（Unix: プロセスグループへ `kill`、Windows: `taskkill /T /F`）・終了時の全停止。通知はチャネル
+  - `src/runner.rs`: 子プロセスの起動（シェル経由）・出力の読み取りスレッド・停止（Unix: プロセスグループへ `kill`、Windows: `taskkill /T /F`）・終了時の全停止。
+    通知はチャネル。宛先は実行ごとの `RunId`（`App` が採番。コマンドの添字ではないので、再読み込みや再実行でずれない）
+  - `src/timefmt.rs`: 経過時間の短い表記（`12s` / `1m 12s` / `3m ago`。幅 7）
   - `src/ui.rs`: 描画（`draw(frame, app)`）と区画（`layout(area, app)`。`tui` が出力欄の高さを `App` に渡すのにも使う）。`TestBackend` に描ける
-  - `src/tui.rs`: 端末ガード（`TerminalGuard`）とイベントループ（`run`: `event::poll(50 ms)` + チャネルの `try_recv`）
+  - `src/tui.rs`: 端末ガード（`TerminalGuard`）とイベントループ（`run`: `event::poll(50 ms)` + チャネルの `try_recv`。時間の表示があるときは 1 秒ごとに描き直す）。
+    `Effect` の実行（プロセスは `runner`、`runs.toml` の再読み込みは `config::load_file`）
 - 設定ファイルは `runs.toml`（`[[command]]` の `name` / `command` / `cwd`、トップレベルの `shell`）。書き方は `runs --help`。リポジトリ直下のものは `runs` 自身の開発用
+- キー: `↑↓` / `jk` 選択、`Enter` 実行（実行中なら停止して再実行）、`s` 停止、`r` 再読み込み、`PageUp` / `PageDown` / `End` スクロール、`q` / Ctrl+C 終了
 - テストは実装と別ファイル: `src/<モジュール>/tests.rs`（層 1・2）、`tests/cli.rs`（層 3）。`tui` と `main` は層 3・4 で確認する。
   テスト専用のゲッターは `#[cfg(test)]` を付ける（本体で使われないと dead_code で clippy に落ちる）
 - 画面と CLI のメッセージは英語（ASCII）。出力は `writeln!` を使い、`println!` / `eprintln!` は使わない（閉じたパイプへ書くと panic する）
