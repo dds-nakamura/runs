@@ -21,6 +21,7 @@ fn config(names: &[&str]) -> Config {
         path: PathBuf::from("/proj/runs.toml"),
         root: PathBuf::from("/proj"),
         shell: vec!["sh".into(), "-c".into()],
+        encoding: None,
         commands: names
             .iter()
             .map(|name| CommandSpec {

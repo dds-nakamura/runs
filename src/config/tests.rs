@@ -86,6 +86,42 @@ fn custom_shell() {
 }
 
 #[test]
+fn default_encoding_per_os() {
+    let config = parse_ok(MINIMAL);
+
+    if cfg!(windows) {
+        assert_eq!(config.encoding, Some(encoding_rs::SHIFT_JIS));
+    } else {
+        assert_eq!(config.encoding, None);
+    }
+}
+
+#[test]
+fn custom_encoding_label() {
+    let config = parse_ok(&format!("encoding = \"windows-1252\"\n{MINIMAL}"));
+    assert_eq!(config.encoding, Some(encoding_rs::WINDOWS_1252));
+
+    // WHATWG のラベルなので大文字小文字や別名も通る
+    let config = parse_ok(&format!("encoding = \"Shift_JIS\"\n{MINIMAL}"));
+    assert_eq!(config.encoding, Some(encoding_rs::SHIFT_JIS));
+}
+
+#[test]
+fn utf8_encoding_means_no_fallback() {
+    let config = parse_ok(&format!("encoding = \"utf-8\"\n{MINIMAL}"));
+
+    assert_eq!(config.encoding, None);
+}
+
+#[test]
+fn unknown_encoding_is_error() {
+    let message = parse_err(&format!("encoding = \"klingon\"\n{MINIMAL}"));
+
+    assert!(message.contains("encoding"), "{message}");
+    assert!(message.contains("klingon"), "{message}");
+}
+
+#[test]
 fn cwd_defaults_to_root() {
     let config = parse_ok(MINIMAL);
 

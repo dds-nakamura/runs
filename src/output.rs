@@ -17,6 +17,8 @@ pub struct OutputBuffer {
 }
 
 impl OutputBuffer {
+    /// テスト用。本体は設定の文字コードを渡す `with_fallback` を使う
+    #[cfg(test)]
     pub fn new(limit: usize) -> Self {
         Self::with_fallback(limit, None)
     }
@@ -57,11 +59,26 @@ impl OutputBuffer {
         self.lines.clear();
         self.dropped = 0;
     }
+
+    /// 以後の行を読み直す文字コードを変える（設定の再読み込み用。溜まった行はそのまま）
+    pub fn set_fallback(&mut self, fallback: Option<&'static Encoding>) {
+        self.fallback = fallback;
+    }
 }
 
 /// 子プロセスの出力の 1 行を文字列にする。
-pub fn decode<'a>(bytes: &'a [u8], _fallback: Option<&'static Encoding>) -> Cow<'a, str> {
-    String::from_utf8_lossy(bytes)
+///
+/// UTF-8 として正しければそのまま（コピーしない）。不正なら `fallback`（Windows の既定は Shift_JIS）で読み直す。
+/// `fallback` が無ければ不正なバイトを U+FFFD に置き換える。行単位の判定なので、1 行の中で文字コードが混ざる出力は扱えない
+pub fn decode<'a>(bytes: &'a [u8], fallback: Option<&'static Encoding>) -> Cow<'a, str> {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => Cow::Borrowed(text),
+        Err(_) => match fallback {
+            // BOM は見ない（行の途中の出力に BOM は来ない）。読めないバイトは U+FFFD になる
+            Some(encoding) => encoding.decode_without_bom_handling(bytes).0,
+            None => String::from_utf8_lossy(bytes),
+        },
+    }
 }
 
 /// 信頼できない文字列から、端末を操作しうるものを取り除く。

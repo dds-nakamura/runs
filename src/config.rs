@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use encoding_rs::Encoding;
 use serde::Deserialize;
 
 pub const FILE_NAME: &str = "runs.toml";
@@ -15,6 +16,13 @@ pub const EXAMPLE: &str = "\
 name = \"test\"
 command = \"cargo test\"";
 
+/// `--help` に出す、省略できる項目の説明。
+pub const OPTIONAL_KEYS: &str = "\
+Optional top-level keys:
+  shell = [\"pwsh\", \"-NoProfile\", \"-Command\"]   # default: sh -c (Unix), cmd /S /C (Windows)
+  encoding = \"shift_jis\"                       # for output that is not UTF-8 (default: shift_jis on Windows, none elsewhere)
+Optional per-command key: cwd = \"web\"           # relative to runs.toml";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     /// 読んだ設定ファイル（再読み込みに使う）。
@@ -23,6 +31,8 @@ pub struct Config {
     pub root: PathBuf,
     /// コマンドを渡すシェル。最後の引数として `CommandSpec::command` を付ける。
     pub shell: Vec<String>,
+    /// UTF-8 として読めない出力行を読み直す文字コード。`None` なら読み直さない
+    pub encoding: Option<&'static Encoding>,
     pub commands: Vec<CommandSpec>,
 }
 
@@ -39,6 +49,8 @@ pub struct CommandSpec {
 #[serde(deny_unknown_fields)]
 struct RawConfig {
     shell: Option<Vec<String>>,
+    /// 文字コードのラベル（`shift_jis`、`windows-1252` など）。`utf-8` なら読み直さない
+    encoding: Option<String>,
     #[serde(default)]
     command: Vec<RawCommand>,
 }
@@ -91,6 +103,10 @@ pub fn parse(text: &str, root: &Path) -> Result<Config> {
         Some(shell) if shell.is_empty() => bail!("`shell` must not be empty"),
         Some(shell) => shell,
     };
+    let encoding = match raw.encoding {
+        None => default_encoding(),
+        Some(label) => parse_encoding(&label)?,
+    };
     if raw.command.is_empty() {
         bail!("no commands defined. Add at least one [[command]]:\n\n{EXAMPLE}");
     }
@@ -120,8 +136,30 @@ pub fn parse(text: &str, root: &Path) -> Result<Config> {
         path: root.join(FILE_NAME),
         root: root.to_path_buf(),
         shell,
+        encoding,
         commands,
     })
+}
+
+/// `encoding` の値を文字コードにする。`utf-8` は「読み直さない」。
+fn parse_encoding(label: &str) -> Result<Option<&'static Encoding>> {
+    let Some(encoding) = Encoding::for_label(label.trim().as_bytes()) else {
+        bail!(
+            "unknown `encoding`: {:?} (examples: \"shift_jis\", \"windows-1252\", \"utf-8\")",
+            label
+        );
+    };
+    Ok((encoding != encoding_rs::UTF_8).then_some(encoding))
+}
+
+/// OS ごとの既定の文字コード。日本語環境の Windows の標準コマンドは CP932（Shift_JIS）で出力する。
+/// Unix は UTF-8 だけ（読み直さない）
+pub fn default_encoding() -> Option<&'static Encoding> {
+    if cfg!(windows) {
+        Some(encoding_rs::SHIFT_JIS)
+    } else {
+        None
+    }
 }
 
 /// OS ごとの既定のシェル。

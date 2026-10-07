@@ -5,6 +5,7 @@
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
+use encoding_rs::Encoding;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 
 use crate::config::{CommandSpec, Config};
@@ -36,12 +37,12 @@ pub struct CommandView {
 }
 
 impl CommandView {
-    fn new(spec: &CommandSpec) -> Self {
+    fn new(spec: &CommandSpec, encoding: Option<&'static Encoding>) -> Self {
         Self {
             display_name: output::sanitize(&spec.name),
             spec: spec.clone(),
             state: CommandState::Idle,
-            output: OutputBuffer::new(output::DEFAULT_LIMIT),
+            output: OutputBuffer::with_fallback(output::DEFAULT_LIMIT, encoding),
             run: None,
             started_at: None,
             finished_at: None,
@@ -183,7 +184,11 @@ impl App {
     pub fn new(title: impl Into<String>, config: &Config, now: Instant) -> Self {
         Self {
             title: title.into(),
-            commands: config.commands.iter().map(CommandView::new).collect(),
+            commands: config
+                .commands
+                .iter()
+                .map(|spec| CommandView::new(spec, config.encoding))
+                .collect(),
             selected: 0,
             scroll: Scroll::Follow,
             output_height: 0,
@@ -336,9 +341,10 @@ impl App {
                         let mut view = old.remove(position);
                         view.spec = spec.clone();
                         view.display_name = output::sanitize(&spec.name);
+                        view.output.set_fallback(config.encoding);
                         view
                     }
-                    None => CommandView::new(spec),
+                    None => CommandView::new(spec, config.encoding),
                 },
             )
             .collect();
