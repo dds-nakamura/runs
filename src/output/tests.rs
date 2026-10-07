@@ -121,3 +121,74 @@ fn zero_limit_keeps_nothing() {
     assert_eq!(buffer.len(), 0);
     assert_eq!(buffer.dropped(), 1);
 }
+
+// --- 文字コード（#8） --------------------------------------------------------------
+
+/// `127.0.0.1 からの応答` の「からの応答」を CP932（Shift_JIS）で表したバイト列。
+const KARANO_OUTOU_CP932: &[u8] = &[0x82, 0xa9, 0x82, 0xe7, 0x82, 0xcc, 0x89, 0x9e, 0x93, 0x9a];
+
+#[test]
+fn cp932_line_is_decoded_with_fallback() {
+    // Windows の ping などは CP932 で出力する。UTF-8 として不正なら既定の文字コードで読み直す
+    let mut buffer = OutputBuffer::with_fallback(10, Some(encoding_rs::SHIFT_JIS));
+
+    buffer.push_raw(&[b"127.0.0.1 ".as_slice(), KARANO_OUTOU_CP932].concat());
+
+    assert_eq!(
+        buffer.lines().collect::<Vec<_>>(),
+        vec!["127.0.0.1 からの応答"]
+    );
+}
+
+#[test]
+fn utf8_line_is_kept_even_with_fallback() {
+    // UTF-8 の出力（cargo など）は読み直さない。CP932 として読めてしまう列でも UTF-8 を優先する
+    let mut buffer = OutputBuffer::with_fallback(10, Some(encoding_rs::SHIFT_JIS));
+
+    buffer.push_raw("日本語 🦀 é".as_bytes());
+
+    assert_eq!(buffer.lines().collect::<Vec<_>>(), vec!["日本語 🦀 é"]);
+}
+
+#[test]
+fn mixed_lines_are_decoded_per_line() {
+    let mut buffer = OutputBuffer::with_fallback(10, Some(encoding_rs::SHIFT_JIS));
+
+    buffer.push_raw("ビルド完了".as_bytes());
+    buffer.push_raw(KARANO_OUTOU_CP932);
+
+    assert_eq!(
+        buffer.lines().collect::<Vec<_>>(),
+        vec!["ビルド完了", "からの応答"]
+    );
+}
+
+#[test]
+fn without_fallback_invalid_bytes_become_replacement_char() {
+    let mut buffer = OutputBuffer::with_fallback(10, None);
+
+    buffer.push_raw(KARANO_OUTOU_CP932);
+
+    let line = buffer.lines().next().expect("1 行ある");
+    assert!(line.contains('\u{fffd}'), "{line:?}");
+    assert!(!line.contains("からの応答"), "{line:?}");
+}
+
+#[test]
+fn decode_returns_borrowed_for_valid_utf8() {
+    // UTF-8 の行はコピーしない（大量の出力で無駄にしない）
+    let decoded = decode(b"plain ascii", Some(encoding_rs::SHIFT_JIS));
+
+    assert!(matches!(decoded, std::borrow::Cow::Borrowed(_)));
+    assert_eq!(decoded, "plain ascii");
+}
+
+#[test]
+fn fallback_decoding_keeps_sanitizing() {
+    // 読み直した行にも制御文字の除去がかかる（ESC [ 31 m を CP932 の文字列の前に置く）
+    let mut buffer = OutputBuffer::with_fallback(10, Some(encoding_rs::SHIFT_JIS));
+
+    buffer.push_raw(&[b"\x1b[31m".as_slice(), KARANO_OUTOU_CP932].concat());
+
+    assert_eq!(buffer.lines().collect::<Vec<_>>(), vec!["からの応答"]);
+}

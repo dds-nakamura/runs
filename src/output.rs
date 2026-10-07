@@ -1,6 +1,9 @@
 //! コマンドの出力の保持（上限付き）と、表示前の無害化。端末にもプロセスにも触らない。
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
+
+use encoding_rs::Encoding;
 
 /// 1 コマンドあたりに保持する行数。
 pub const DEFAULT_LIMIT: usize = 10_000;
@@ -9,21 +12,28 @@ pub struct OutputBuffer {
     lines: VecDeque<String>,
     limit: usize,
     dropped: usize,
+    /// UTF-8 として読めない行を読み直す文字コード。`None` なら読み直さない（U+FFFD に置き換える）
+    fallback: Option<&'static Encoding>,
 }
 
 impl OutputBuffer {
     pub fn new(limit: usize) -> Self {
+        Self::with_fallback(limit, None)
+    }
+
+    pub fn with_fallback(limit: usize, fallback: Option<&'static Encoding>) -> Self {
         Self {
             lines: VecDeque::new(),
             limit,
             dropped: 0,
+            fallback,
         }
     }
 
     /// 子プロセスから届いた 1 行（改行を含まない生のバイト列）を無害化して追加する。
     pub fn push_raw(&mut self, bytes: &[u8]) {
         self.lines
-            .push_back(sanitize(&String::from_utf8_lossy(bytes)));
+            .push_back(sanitize(&decode(bytes, self.fallback)));
         while self.lines.len() > self.limit {
             self.lines.pop_front();
             self.dropped += 1;
@@ -47,6 +57,11 @@ impl OutputBuffer {
         self.lines.clear();
         self.dropped = 0;
     }
+}
+
+/// 子プロセスの出力の 1 行を文字列にする。
+pub fn decode<'a>(bytes: &'a [u8], _fallback: Option<&'static Encoding>) -> Cow<'a, str> {
+    String::from_utf8_lossy(bytes)
 }
 
 /// 信頼できない文字列から、端末を操作しうるものを取り除く。
