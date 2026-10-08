@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event;
+use ratatui::crossterm::{cursor, event, execute};
 use ratatui::layout::Rect;
 
 use crate::app::{self, App, Effect};
@@ -23,9 +23,10 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const TICK: Duration = Duration::from_secs(1);
 /// 終了時に、実行中のコマンドが穏やかに止まるのを待つ猶予
 const STOP_GRACE: Duration = Duration::from_secs(2);
-/// シグナルを受けてから、主スレッドの片付け（全停止の上限 3 秒 + 復元）を待つ上限。
-/// これを過ぎたら主スレッドは端末の読み取りで止まっていると見なし、ハンドラのスレッドが子プロセスを KILL して終了する
-const EMERGENCY_GRACE: Duration = Duration::from_secs(5);
+/// シグナルを受けてから、主スレッドの片付けを待つ上限。全停止の上限（`STOP_GRACE` + `runner` の強制終了の猶予 1 秒）に、
+/// 停止コマンド（`kill` / `taskkill`。コマンドの数だけ順に起動する）と描画の分の余裕を足した値。
+/// これを過ぎたら主スレッドは端末の読み取りか描画で止まっていると見なし、ハンドラのスレッドが片付けて終了する
+const EMERGENCY_GRACE: Duration = Duration::from_secs(10);
 
 /// raw mode と alternate screen を有効にし、drop で必ず元に戻す。
 ///
@@ -104,7 +105,9 @@ pub fn run(app: &mut App, config: &Config) -> Result<()> {
 /// raw mode 中の Ctrl+C はキーとして届くので、ここを通るのは `kill` と Ctrl+Break。
 ///
 /// 例外は端末が本当に閉じたとき（SSH の切断など）。crossterm の端末の読み取りが戻らず、主スレッドがフラグを見に来られない。
-/// そのときは `EMERGENCY_GRACE` の後に、このスレッドが子プロセスを KILL してプロセスを終える（端末はもう無いので復元は問わない）
+/// そのときは `EMERGENCY_GRACE` の後に、このスレッドが子プロセスを KILL し、端末の復元を試してからプロセスを終える
+/// （`process::exit` で `Terminal` の drop を通らない唯一の経路。rust-safety 2 章の例外として spec で合意済み。
+/// 端末が消えていれば復元の書き込みは失敗するだけで、生きていれば raw mode・alternate screen・カーソルが戻る）
 fn install_termination_flag(
     live: LivePids,
     cleaned_up: Arc<AtomicBool>,
@@ -121,6 +124,10 @@ fn install_termination_flag(
             std::thread::sleep(Duration::from_millis(100));
         }
         live.kill_all();
+        // 主スレッドが止まっているので、こちらで復元を試す。失敗は捨てる（端末が無いときは書けない）
+        let _ = ratatui::try_restore();
+        let _ = execute!(io::stdout(), cursor::Show);
+        let _ = writeln!(io::stderr(), "runs: terminated by signal (forced)");
         std::process::exit(1);
     })
     .context("failed to install the signal handler")?;

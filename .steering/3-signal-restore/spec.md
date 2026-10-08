@@ -64,7 +64,9 @@ if terminated.load(Ordering::Acquire) {
   （`src/event/source/unix/mio.rs`）は EOF / EIO で抜けないため、`event::poll` から戻らず、フラグを見に来られない（レビューで判明。WSL で再現）。
   そのため、ハンドラのスレッドはフラグを立てた後、主スレッドの片付け完了（`cleaned_up`）を `EMERGENCY_GRACE`（5 秒 = 全停止の上限 3 秒 + 余裕）まで待ち、
   終わっていなければ `Runner` が共有する生きている pid（`LivePids`）をすべて KILL して `std::process::exit(1)` する。端末はもう無いので復元は問わない。
-  `kill -s HUP` では端末が生きているので通常の経路になる。疑似端末での確認は `script` を SIGKILL して pty のマスターを閉じる
+  `kill -s HUP` では端末が生きているので通常の経路になる。疑似端末での確認は `script` を SIGKILL して pty のマスターを閉じる。
+  `EMERGENCY_GRACE` は 10 秒（全停止の上限 3 秒 + 停止コマンドの起動（コマンドの数に比例）と描画の余裕）。端末が生きたまま 10 秒を超えた場合も、
+  `exit` の前に `try_restore` とカーソルの表示を試す（レビューの指摘で追加。rust-safety 2 章の例外として「適用した規約」に記載）
 - Windows（`src/platform/windows/mod.rs`）: `SetConsoleCtrlHandler` のコールバックはセマフォを上げて **すぐ TRUE を返す**。利用者のクロージャは別スレッドが後で呼ぶ。
   Ctrl+Break はコールバックが返ってもプロセスが続くので、主スレッドが片付けられる。
   **タブ・ウィンドウを閉じる操作（CTRL_CLOSE_EVENT）は、コールバックが返った時点で OS がプロセスを終了させる**ので、片付けは間に合わない（懸念点 1）
@@ -103,7 +105,9 @@ if terminated.load(Ordering::Acquire) {
 
 | 規約・方針 | 適用内容 |
 |---|---|
-| rust-safety 2 章 | 復元は既存の 1 か所（ガードの drop）。ハンドラから復元しない。復元の失敗で panic しない |
+| rust-safety 2 章 | 通常は復元は既存の 1 か所（ガードの drop）。ハンドラから復元しない。復元の失敗で panic しない。
+  **例外**: 端末が閉じて主スレッドが戻らないときだけ、ハンドラのスレッドが `EMERGENCY_GRACE` 後に子プロセスを KILL し、`try_restore` とカーソルの表示を試してから `process::exit(1)` する
+  （`Terminal` の drop を通らない唯一の経路。端末が生きたまま片付けが遅れた場合でも、復元を試すので壊れたままにはならない） |
 | rust-safety 5 章 | `unsafe` を使わない（`ctrlc` が内部で持つ） |
 | rust-safety 7 章 | メッセージは端末の復元後に `main` が stderr へ |
 | rust-safety 8 章 | 依存は intent で合意。feature は `termination` だけ |
@@ -117,7 +121,10 @@ if terminated.load(Ordering::Acquire) {
 2. **ハンドラの登録が失敗した場合**（まれ。OS のエラー）は `tui::run` をエラーで終える。シグナルを捕まえられないまま動くより、起動しない方を選ぶ
 3. **SIGHUP で端末が無くなった後の復元は、stdout への書き込みが失敗する**。失敗は捨てる（既存の `Drop` の方針）
 4. **macOS 向けの推移的依存（`objc2` 系）が `Cargo.lock` に入る**。macOS でのビルドは未検証のまま
-5. **impact-analyzer は使っていない**。変更は `tui.rs` 1 ファイル
+5. **`process::exit` の経路を 1 つ作った**（判断者: ユーザー）。rust-safety 2 章は「`Terminal` が drop されない経路を作らない」としているが、
+   端末が閉じて主スレッドが戻らない場合は他に手段が無い。`exit` の前に復元を試すこと、`EMERGENCY_GRACE` を全停止の上限より十分長くすることで、
+   端末が生きている場合の害を抑える
+6. **impact-analyzer は使っていない**。変更は `tui.rs` 1 ファイル
 
 ## intent の未解決の問い
 

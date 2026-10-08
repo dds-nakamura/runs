@@ -74,7 +74,8 @@ impl LivePids {
         self.lock().remove(&pid);
     }
 
-    /// 全部を強制終了する（Unix はプロセスグループごと、Windows は木ごと）。待たない
+    /// 全部を強制終了する（Unix はプロセスグループごと、Windows は木ごと）。終了コマンドを順に起動するだけで、
+    /// プロセスが消えるのは待たない（ロックは起動の間だけ持つ。直後に `process::exit` する緊急時用）
     pub fn kill_all(&self) {
         for pid in self.lock().iter() {
             let _ = force_kill(*pid);

@@ -31,6 +31,12 @@ Windows でタブ・ウィンドウを閉じる操作は `ctrlc` の実装上間
 - Nit への対応: spec の `ctrlc` の説明（パイプ → セマフォ）と `TerminationRequested` の記述、2 回目のシグナルの扱いを spec に追記、
   `pty-check.sh` の `sleep` の秒数を毎回変えて無関係な `sleep` を数えないように、plan.md の変更ファイルと証明を 6 ケース（SIGTERM / SIGHUP / SIGINT / 停止 + TERM / 停止 + HUP / 端末を閉じる）に更新
 
+- **reviewer（2 回目）の Important 2 件への対応**
+  1. 端末が生きているのに片付けが 5 秒を超えると `process::exit` で端末が壊れたまま残る → `EMERGENCY_GRACE` を 10 秒にし、`exit` の前に `try_restore` とカーソルの表示を試す。
+     rust-safety 2 章の例外として spec の「適用した規約」と懸念点 5 に記載（ユーザーの承認待ち）
+  2. `pty-check.sh` の「端末を閉じる」ケースの `pkill -x script` / `pkill -x runs` が無関係なプロセスを殺す → `setsid` で新しいセッションにし、セッション ID で数え・殺す。
+     `BIN` を絶対パスに、`script -c` の中では export 済みの `BIN` を展開
+
 ## 変更するファイル
 
 - `src/tui.rs`（変更）:
