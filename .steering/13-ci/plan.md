@@ -165,6 +165,13 @@ unknown-git = "deny"
 - CLAUDE.md / `.claude/README.md` に `EVECLOUD` / `THEMIS` / `evecloud` が残っていない（`git grep` で `settings.json` 以外 0 件）
 - 公開後（ユーザー操作後）: `gh api repos/dds-nakamura/runs/rulesets` がルールセットを返す。`gh api repos/dds-nakamura/runs --jq .visibility` が `public`
 
+## 実装中に分かったこと
+
+- cargo-deny 0.20.2（手元、2026-10-08）で `deny.toml` は書いたとおりで通った。`Unicode-DFS-2016` / `WTFPL` は `runs` の依存グラフに現れず、許可リストへの追加は不要。古い書式の警告も無し
+- `cargo deny check` の警告は `hashbrown`（2 版）と `syn`（2 版）の重複のみ（`multiple-versions = "warn"` のとおり）。advisories / bans / licenses / sources すべて ok
+- `CI=1` で cargo-deny が無い状態の `verify.sh --all` は `NG: cargo deny（CI では必須…）` → `VERIFY FAILED` になった（手順 3 の確認。cargo-deny のインストール中に実施）
+- `ci.yml` の YAML 文法は手元に pyyaml が無く確認できなかった。push 後の Actions で確認する
+
 ## 並行可能な作業
 
 無し（CI の往復が直列）。

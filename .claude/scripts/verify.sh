@@ -60,6 +60,8 @@ if [ "$MODE" = "all" ]; then
   section "cargo deny"
   if cargo deny --version >/dev/null 2>&1; then
     cargo deny check || fail "cargo deny"
+  elif [ -n "${CI:-}" ]; then
+    fail "cargo deny（CI では必須。ワークフローで cargo-deny を導入する）"
   else
     warn "cargo-deny 未導入のため依存（ライセンス・脆弱性）の確認を省略（cargo install --locked cargo-deny）"
   fi
