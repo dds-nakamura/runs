@@ -29,12 +29,14 @@ CLAUDE.md / `.claude/README.md` の社内固有名を一般的な表現に直す
 - `.claude/README.md`（変更）:
   - L3-4: 「<元のプラグイン名> プラグイン（…）を、<元のプロジェクト名> から独立した Rust ターミナルアプリ向けに作り直したものです。」→「既存の開発フロー用プラグイン（[The AI-Native SDLC Playbook](…) に基づく）を、この Rust ターミナルアプリ向けに作り直したものです。」（reviewer の Nit で「社内の」→「既存の」）
   - L18: 「cargo-deny（任意）」→「cargo-deny（任意。CI では必須）」
-  - L20: 「<元のプラグイン 2 件> は…（フックの二重実行と <元のプロジェクト名> 前提のスキル・警告を避けるため）」→「元のプラグインは `.claude/settings.json` の `enabledPlugins` でこのプロジェクトでは無効にしています（フックの二重実行と、別プロジェクト前提のスキル・警告を避けるため）」
+  - L20: 「<元のプラグイン 2 件> は…（フックの二重実行と <元のプロジェクト名> 前提のスキル・警告を避けるため）」→「元のプラグインを使っている環境では、`.claude/settings.local.json`（gitignore 済み）の `enabledPlugins` でそのプラグインを `false` にしてください（…）」（当初は settings.json を指す文だったが、プラグイン ID を local へ移したのに合わせて変更）
   - L22 見出し「<元のプラグイン名> からの主な変更」→「元のプラグインからの主な変更」、L24 の列名 `<元のプラグイン名>` → `元のプラグイン`
   - L27: 「Backlog `<プロジェクトキー>` / Backlog Git 固定」→「Backlog / Backlog Git 固定」
   - L33: 「<元のプラグイン名>-security（API・認証・ログ）」→「security（API・認証・ログ）」
   - 「構成」表の末尾付近に行を追加: `| .github/workflows/ci.yml（ルート） | CI。3 OS の stable で verify.sh --all、Linux の 1.88 で check / test |`
-  - `.claude/settings.json` の `enabledPlugins` のキー名はプラグイン ID そのものなので変えない（機能に必要）
+  - `.claude/settings.json` の `enabledPlugins`（元のプラグイン ID 2 件）は当初「機能に必要なので変えない」としたが、reviewer 指摘を受けてユーザーが「gitignore 済みの `.claude/settings.local.json` へ移す」と判断。settings.json からはブロックごと削除した（permissions / hooks は変更なし）
+- `.claude/settings.json`（変更。reviewer 対応で追加）: `enabledPlugins` ブロックを削除
+- `.claude/settings.local.json`（新規、gitignore。reviewer 対応で追加）: `enabledPlugins` の移設先
 - `.steering/13-ci/plan.md`（新規）: この計画。`.steering/13-ci/spec.md`: 実装中にずれたら該当節を直す
 
 ### `.github/workflows/ci.yml`
@@ -48,8 +50,9 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # PR への連続 push は古い実行を止める。main への push は実行中のものを止めない（reviewer 対応）
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 env:
   CARGO_TERM_COLOR: never
   CARGO_INCREMENTAL: 0
@@ -68,13 +71,15 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny
+          tool: cargo-deny@0.20   # マイナー版で固定（reviewer 対応）
       - run: bash .claude/scripts/verify.sh --all
       - run: git diff --exit-code -- Cargo.lock
   msrv:
@@ -83,6 +88,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --locked --workspace --all-targets --all-features
@@ -117,7 +124,8 @@ confidence-threshold = 0.8
 
 [bans]
 multiple-versions = "warn"
-wildcards = "allow"
+# `foo = "*"` のような版指定を禁止する。path 依存を足すときは allow-wildcard-paths = true を併用する
+wildcards = "deny"
 
 [sources]
 unknown-registry = "deny"
@@ -179,6 +187,10 @@ unknown-git = "deny"
   - Minor: spec の advisories の記述を「エラーになる」に訂正。`ci.yml` で `cargo-deny@0.20` に固定、`concurrency` のグループに `github.workflow` を足し `cancel-in-progress` を PR のときだけに。LICENSE の著作権者は個人名義のまま（ユーザー判断）
   - Nit: `verify.sh` の先頭コメントと `CI` 判定のコメント、`persist-credentials: false`、`wildcards = "deny"`（手元の `cargo deny check` で ok）、README の「社内の」→「既存の」
   - 変更ファイルが plan の表から増えた: `.claude/settings.json`（`enabledPlugins` の削除）、`.claude/settings.local.json`（新規、gitignore）
+- reviewer 2 回目（Important 1 / Minor 1 / Nit 2）への対応:
+  - Important: 1 回目の対応で ci.yml / deny.toml / settings.json を変えたのに、spec / plan の設計節（ci.yml と deny.toml の断片、ファイル表、settings.json の記述）が旧値のままだった。実物に合わせて直し、旧値を grep して残りが無いことを確認。CLAUDE.md の「Things Claude gets wrong」に「旧値を spec / plan に grep する」を追記（同種の失敗 2 回目）
+  - Minor: 途中コミットに固有名が残る → スカッシュマージで main に入れない（ユーザー判断。spec C5）
+  - Nit: ci.yml の `concurrency` のコメントを正確に（待機中は 1 件まで）、README に `settings.local.json` の書き方の例を 1 行
 
 ## 並行可能な作業
 

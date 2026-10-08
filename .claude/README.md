@@ -19,6 +19,7 @@
 
 元のプラグインを使っている環境では、`.claude/settings.local.json`（gitignore 済み）の `enabledPlugins` でそのプラグインを `false` にしてください
 （フックの二重実行と、別プロジェクト前提のスキル・警告を避けるため。プラグイン ID は公開リポジトリに置かないので追跡ファイルには書いていません）。
+書き方: `{ "enabledPlugins": { "<plugin>@<marketplace>": false } }`
 
 ## 元のプラグインからの主な変更
 

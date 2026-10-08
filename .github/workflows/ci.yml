@@ -9,7 +9,8 @@ permissions:
   contents: read
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  # PR への連続 push は古い実行を止める。main への push は結果を残したいので止めない
+  # PR への連続 push は古い実行を止める。main への push では実行中のものを止めない
+  # （待機中の実行は同じ group で 1 件までしか残らない。短時間に 3 回 push すると 2 回目は置き換えられる）
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 env:
   CARGO_TERM_COLOR: never

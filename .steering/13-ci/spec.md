@@ -12,7 +12,7 @@
 - [ ] A4. CI 上の `verify.sh --all` は cargo-deny が無いと **失敗する**（手元では従来どおり WARN で省略）。判定は環境変数 `CI` の有無
 - [ ] A5. `deny.toml` がリポジトリ直下にあり、`cargo deny check`（advisories / licenses / bans / sources）が通る。手元で cargo-deny を入れた `verify.sh --all` も WARN 無しで `VERIFY OK`
 - [ ] A6. `Cargo.lock` が CI で書き換わらない（全コマンドが `--locked`。`git diff --exit-code Cargo.lock` で確認するステップを置く）
-- [ ] A7. ワークフローの各ジョブに `timeout-minutes` があり、同じ PR への連続 push では古い実行がキャンセルされる（`concurrency` + `cancel-in-progress`）
+- [ ] A7. ワークフローの各ジョブに `timeout-minutes` があり、同じ PR への連続 push では古い実行がキャンセルされる（`concurrency` + `cancel-in-progress`。main への push では実行中のものを止めない。reviewer 指摘で条件を追加）
 - [ ] A8. CLAUDE.md の Commands に CI の見方（PR の Checks、`gh pr checks`、`gh run view --log-failed`）と、落ちたときに手元で再現する方法（`verify.sh --all`。MSRV は `cargo +1.88 test --locked`）が書かれている。未確定事項の「macOS の確認手段」「MSRV 1.88 の実ビルド」「CI の 3 OS マトリクス」が [x] になっている
 - [ ] A9. #13 の PR 自身で全ジョブが緑。macOS で落ちたテストがあれば、その事実と原因の見立てを PR と plan.md に記録し、修正は `fix/` の別課題として起票する（C3 の判断: 別課題。`src/` は #13 では触らない）
 - [ ] A10. リポジトリが public になった後、main のブランチ保護（ルールセット）で CI の 4 ジョブ（`verify (ubuntu-latest)` / `verify (windows-latest)` / `verify (macos-latest)` / `msrv`）が必須ステータスチェックになっている（C1 の判断: public 化。公開とルールセットの設定はユーザーが手動で行い、手順は下記「ブランチ保護の手順」）。CLAUDE.md にこの運用が 1 行で書かれている
@@ -44,6 +44,8 @@
 | `CLAUDE.md` | Commands に CI の 2 行、未確定事項の 3 件を更新、ブランチ保護の運用（C1）と公開リポジトリであること（C5）を記載。社内固有名の扱いは C5 の判断に従う |
 | `.steering/13-ci/intent.md` | C1 / C5 の判断を「制約」と「未解決の問い」に反映 |
 | `LICENSE-MIT` / `LICENSE-APACHE` | 新規。MIT と Apache-2.0 の全文（著作権者は GitHub ID `dds-nakamura`、年は 2026） |
+| `.claude/settings.json` | `enabledPlugins`（元のプラグイン ID 2 件）を削除（C5 の追加判断。permissions / hooks は変更なし） |
+| `.claude/settings.local.json`（gitignore） | 新規。`enabledPlugins` を移す。追跡されないので clone 直後は手動で作る（手順は `.claude/README.md`） |
 | `Cargo.toml` | `license = "MIT OR Apache-2.0"` を足す（メタデータのみ。依存・feature は変えない） |
 
 ### ワークフロー `ci.yml`
@@ -55,8 +57,8 @@ on:
   push:
     branches: [main]
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}   # main への push では実行中のものを止めない
 env:
   CARGO_TERM_COLOR: never
   RUST_BACKTRACE: 1
@@ -73,17 +75,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - actions/checkout@v7
+      - actions/checkout@v7（persist-credentials: false。push しないのでトークンを .git に残さない）
       - dtolnay/rust-toolchain@stable（components: rustfmt, clippy）
       - Swatinem/rust-cache@v2
-      - taiki-e/install-action@v2（tool: cargo-deny。ビルド済みバイナリを取るだけなので数秒）
+      - taiki-e/install-action@v2（tool: cargo-deny@0.20。ビルド済みバイナリを取るだけなので数秒。マイナー版で固定し、上げるときは PR で）
       - run: bash .claude/scripts/verify.sh --all
       - run: git diff --exit-code Cargo.lock
   msrv:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - actions/checkout@v7
+      - actions/checkout@v7（persist-credentials: false。push しないのでトークンを .git に残さない）
       - dtolnay/rust-toolchain@1.88
       - Swatinem/rust-cache@v2
       - run: cargo check --locked --workspace --all-targets --all-features
@@ -104,7 +106,7 @@ cargo-deny は Cargo.lock 全体ではなく、`runs` の feature で解決し�
 | `[graph]` | `all-features = true`（verify と同じ条件）。`targets` は指定しない（3 OS の依存をすべて見る） |
 | `[licenses]` | `allow` に `MIT` / `Apache-2.0` / `Apache-2.0 WITH LLVM-exception` / `BSD-3-Clause` / `Unicode-3.0` / `Zlib`。`OR` 式はいずれか 1 つが通れば可（`MIT OR Apache-2.0 OR LGPL-2.1-or-later` は MIT で通る）。`Unicode-DFS-2016`（非推奨 ID。wezterm-bidi / finl_unicode）と `WTFPL`（terminfo）はグラフに現れた場合だけ足す。`runs` 自身は `Cargo.toml` に `license = "MIT OR Apache-2.0"` を足すので許可リストで通る（C5 の判断。`private.ignore` は使わない） |
 | `[advisories]` | 既定の RustSec DB。`yanked = "deny"`。cargo-deny 0.16 以降、`ignore` に無い勧告（unmaintained / unsound を含む）はすべて**エラー**になり、無関係な PR でも `verify` が落ちる（安全側）。該当が出たら `ignore` に理由付きで入れる（spec の合意事項）。（reviewer 指摘で「既定は警告」から訂正、2026-10-08） |
-| `[bans]` | `multiple-versions = "warn"`（syn 1/2、nix 3 版、thiserror 1/2、getrandom 2 版が既に重複している。`deny` にすると今は通らない）。`wildcards = "allow"` |
+| `[bans]` | `multiple-versions = "warn"`（syn 1/2、nix 3 版、thiserror 1/2、getrandom 2 版が既に重複している。`deny` にすると今は通らない）。`wildcards = "deny"`（`foo = "*"` の版指定を禁止。path 依存を足すときは `allow-wildcard-paths = true` を併用。reviewer 指摘で allow から変更） |
 | `[sources]` | `unknown-registry = "deny"`、`unknown-git = "deny"`。crates.io 以外から取らない |
 
 バイナリ配布時の著作権表示（`encoding_rs` の BSD-3-Clause など）は未確定事項「配布方法」の範囲。`deny.toml` の許可リストが、そのときの表示対象の一覧にもなる。
@@ -231,6 +233,7 @@ Actions のバージョン更新と依存の更新は自動化しない。`cargo
 - `.claude/settings.json` の `enabledPlugins`（元のプラグイン ID 2 件）は、gitignore 済みの `.claude/settings.local.json` に移す。追跡ファイルから実名が消える代わりに、clone 直後はそのプラグインが有効になる（手順は `.claude/README.md` に記載。開発者は本人のみ）
 - LICENSE の著作権者は個人の GitHub ID（`dds-nakamura`）のままでよい。個人のプロジェクトとして判断（職務著作の観点は確認済み。法的助言ではない）
 - 同じ PR で追加した spec / plan に固有名を書き写していたので伏せ字にし、CLAUDE.md の Conventions に「追跡ファイルに固有名・メールアドレスを書かない」を足した
+- このブランチの途中コミット（spec / plan の旧版）には固有名と会社ドメインの文字列が残る。PR #14 は**スカッシュマージ**で main に入れ、途中コミットを main の履歴に入れない（reviewer 2 回目の指摘、2026-10-08、ユーザー判断）。PR の参照（`refs/pull/14/head`）に残る分は「履歴を書き換えない」判断の範囲内として受け入れる
 
 ## intent の未解決の問い
 
