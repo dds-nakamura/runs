@@ -21,6 +21,7 @@ fn config(names: &[&str]) -> Config {
         path: PathBuf::from("/proj/runs.toml"),
         root: PathBuf::from("/proj"),
         shell: vec!["sh".into(), "-c".into()],
+        encoding: None,
         commands: names
             .iter()
             .map(|name| CommandSpec {
@@ -692,6 +693,50 @@ fn notice_is_sanitized_to_one_line() {
     app.set_notice("reload failed: invalid \x1b[31mruns.toml\x1b[0m\nTOML parse error at line 1");
 
     assert_eq!(app.notice(), Some("reload failed: invalid runs.toml"));
+}
+
+// --- 文字コード（#8） --------------------------------------------------------------
+
+/// 「からの応答」の CP932 表現。
+const KARANO_OUTOU_CP932: &[u8] = &[0x82, 0xa9, 0x82, 0xe7, 0x82, 0xcc, 0x89, 0x9e, 0x93, 0x9a];
+
+#[test]
+fn config_encoding_is_used_for_output() {
+    let mut config = config(&["ping"]);
+    config.encoding = Some(encoding_rs::SHIFT_JIS);
+    let mut app = App::new("t", &config, Instant::now());
+    let run = run_selected(&mut app);
+
+    app.on_runner_event(RunnerEvent::Output {
+        run,
+        bytes: KARANO_OUTOU_CP932.to_vec(),
+    });
+
+    assert_eq!(selected_lines(&app), ["からの応答"]);
+}
+
+#[test]
+fn reload_changes_encoding_for_following_lines() {
+    let mut app = app();
+    let run = run_selected(&mut app);
+    app.on_runner_event(RunnerEvent::Output {
+        run,
+        bytes: KARANO_OUTOU_CP932.to_vec(),
+    });
+
+    let mut new = config(&["build", "test", "serve"]);
+    new.encoding = Some(encoding_rs::SHIFT_JIS);
+    app.replace_config(&new);
+    app.on_runner_event(RunnerEvent::Output {
+        run,
+        bytes: KARANO_OUTOU_CP932.to_vec(),
+    });
+
+    // 溜まった行はそのまま（化けたまま）、以後の行は読み直される
+    let lines = selected_lines(&app);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines[0].contains('\u{fffd}'), "{lines:?}");
+    assert_eq!(lines[1], "からの応答");
 }
 
 // --- スクロール ------------------------------------------------------------------

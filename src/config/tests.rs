@@ -86,6 +86,53 @@ fn custom_shell() {
 }
 
 #[test]
+fn default_encoding_per_os() {
+    let config = parse_ok(MINIMAL);
+
+    if cfg!(windows) {
+        assert_eq!(config.encoding, Some(encoding_rs::SHIFT_JIS));
+    } else {
+        assert_eq!(config.encoding, None);
+    }
+}
+
+#[test]
+fn custom_encoding_label() {
+    let config = parse_ok(&format!("encoding = \"windows-1252\"\n{MINIMAL}"));
+    assert_eq!(config.encoding, Some(encoding_rs::WINDOWS_1252));
+
+    // WHATWG のラベルなので大文字小文字や別名も通る
+    let config = parse_ok(&format!("encoding = \"Shift_JIS\"\n{MINIMAL}"));
+    assert_eq!(config.encoding, Some(encoding_rs::SHIFT_JIS));
+}
+
+#[test]
+fn utf8_encoding_means_no_fallback() {
+    let config = parse_ok(&format!("encoding = \"utf-8\"\n{MINIMAL}"));
+
+    assert_eq!(config.encoding, None);
+}
+
+#[test]
+fn line_incompatible_encodings_are_errors() {
+    // UTF-16 と ISO-2022-JP は「行単位では扱えない」経路、replacement 系（iso-2022-kr）は「未知のラベル」経路
+    for label in ["utf-16le", "utf-16be", "iso-2022-jp"] {
+        let message = parse_err(&format!("encoding = \"{label}\"\n{MINIMAL}"));
+        assert!(message.contains("line-based"), "{label}: {message}");
+    }
+    let message = parse_err(&format!("encoding = \"iso-2022-kr\"\n{MINIMAL}"));
+    assert!(message.contains("unknown `encoding`"), "{message}");
+}
+
+#[test]
+fn unknown_encoding_is_error() {
+    let message = parse_err(&format!("encoding = \"klingon\"\n{MINIMAL}"));
+
+    assert!(message.contains("encoding"), "{message}");
+    assert!(message.contains("klingon"), "{message}");
+}
+
+#[test]
 fn cwd_defaults_to_root() {
     let config = parse_ok(MINIMAL);
 

@@ -1,6 +1,9 @@
 //! コマンドの出力の保持（上限付き）と、表示前の無害化。端末にもプロセスにも触らない。
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
+
+use encoding_rs::Encoding;
 
 /// 1 コマンドあたりに保持する行数。
 pub const DEFAULT_LIMIT: usize = 10_000;
@@ -9,21 +12,30 @@ pub struct OutputBuffer {
     lines: VecDeque<String>,
     limit: usize,
     dropped: usize,
+    /// UTF-8 として読めない行を読み直す文字コード。`None` なら読み直さない（U+FFFD に置き換える）
+    fallback: Option<&'static Encoding>,
 }
 
 impl OutputBuffer {
+    /// テスト用。本体は設定の文字コードを渡す `with_fallback` を使う
+    #[cfg(test)]
     pub fn new(limit: usize) -> Self {
+        Self::with_fallback(limit, None)
+    }
+
+    pub fn with_fallback(limit: usize, fallback: Option<&'static Encoding>) -> Self {
         Self {
             lines: VecDeque::new(),
             limit,
             dropped: 0,
+            fallback,
         }
     }
 
     /// 子プロセスから届いた 1 行（改行を含まない生のバイト列）を無害化して追加する。
     pub fn push_raw(&mut self, bytes: &[u8]) {
         self.lines
-            .push_back(sanitize(&String::from_utf8_lossy(bytes)));
+            .push_back(sanitize(&decode(bytes, self.fallback)));
         while self.lines.len() > self.limit {
             self.lines.pop_front();
             self.dropped += 1;
@@ -46,6 +58,26 @@ impl OutputBuffer {
     pub fn clear(&mut self) {
         self.lines.clear();
         self.dropped = 0;
+    }
+
+    /// 以後の行を読み直す文字コードを変える（設定の再読み込み用。溜まった行はそのまま）
+    pub fn set_fallback(&mut self, fallback: Option<&'static Encoding>) {
+        self.fallback = fallback;
+    }
+}
+
+/// 子プロセスの出力の 1 行を文字列にする。
+///
+/// UTF-8 として正しければそのまま（コピーしない）。不正なら `fallback`（Windows の既定は Shift_JIS）で読み直す。
+/// `fallback` が無ければ不正なバイトを U+FFFD に置き換える。行単位の判定なので、1 行の中で文字コードが混ざる出力は扱えない
+pub fn decode<'a>(bytes: &'a [u8], fallback: Option<&'static Encoding>) -> Cow<'a, str> {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => Cow::Borrowed(text),
+        Err(_) => match fallback {
+            // BOM は見ない（行の途中の出力に BOM は来ない）。読めないバイトは U+FFFD になる
+            Some(encoding) => encoding.decode_without_bom_handling(bytes).0,
+            None => String::from_utf8_lossy(bytes),
+        },
     }
 }
 
