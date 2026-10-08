@@ -2,17 +2,19 @@
 
 use std::io::{self, IsTerminal, Write};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event;
+use ratatui::crossterm::{cursor, event, execute};
 use ratatui::layout::Rect;
 
 use crate::app::{self, App, Effect};
 use crate::config::{self, Config};
-use crate::runner::{Runner, RunnerEvent};
+use crate::runner::{LivePids, Runner, RunnerEvent};
 use crate::ui;
 
 /// 入力を待つ間隔。この間隔で子プロセスの通知も取り込む
@@ -21,6 +23,12 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const TICK: Duration = Duration::from_secs(1);
 /// 終了時に、実行中のコマンドが穏やかに止まるのを待つ猶予
 const STOP_GRACE: Duration = Duration::from_secs(2);
+/// シグナルを受けてから、主スレッドの片付けを待つ上限。全停止の上限（`STOP_GRACE` + `runner` の強制終了の猶予 1 秒）に、
+/// 停止コマンド（`kill` / `taskkill`。コマンドの数だけ順に起動する）と描画の分の余裕を足した値。
+/// これを過ぎたら主スレッドは端末の読み取りか描画で止まっていると見なし、ハンドラのスレッドが片付けて終了する
+const EMERGENCY_GRACE: Duration = Duration::from_secs(10);
+/// 緊急終了のとき、別スレッドでの端末の復元を待つ上限。
+const RESTORE_WAIT: Duration = Duration::from_millis(500);
 
 /// raw mode と alternate screen を有効にし、drop で必ず元に戻す。
 ///
@@ -72,12 +80,68 @@ pub fn run(app: &mut App, config: &Config) -> Result<()> {
     }
 
     let (mut runner, rx) = Runner::new(config.shell.clone());
+    // SIGTERM / SIGHUP（Unix）や Ctrl+Break（Windows）でも、下の経路で全停止と復元が走るようにする
+    let cleaned_up = Arc::new(AtomicBool::new(false));
+    let terminated = install_termination_flag(runner.live_pids(), Arc::clone(&cleaned_up))?;
     let mut guard = TerminalGuard::new()?;
-    let result = event_loop(&mut guard.terminal, app, &config.path, &mut runner, &rx);
+    let result = event_loop(
+        &mut guard.terminal,
+        app,
+        &config.path,
+        &mut runner,
+        &rx,
+        &terminated,
+    );
     // 端末を復元する前に子プロセスを片付ける（kill / taskkill の出力は捨てているので画面は崩れない）
     runner.stop_all_and_wait(STOP_GRACE);
     drop(guard);
+    cleaned_up.store(true, Ordering::Release);
     result
+}
+
+/// シグナル・コンソールの制御イベントで立つフラグを登録する。
+///
+/// ハンドラは別スレッドで呼ばれる。ふつうはフラグを立てるだけで、主スレッドのイベントループが全停止と復元をする
+/// （端末やプロセスには主スレッドだけが触る）。
+/// `termination` feature により、Unix は SIGINT / SIGTERM / SIGHUP、Windows は Ctrl+C / Ctrl+Break などが対象。
+/// raw mode 中の Ctrl+C はキーとして届くので、ここを通るのは `kill` と Ctrl+Break。
+///
+/// 例外は端末が本当に閉じたとき（SSH の切断など）。crossterm の端末の読み取りが戻らず、主スレッドがフラグを見に来られない。
+/// そのときは `EMERGENCY_GRACE` の後に、このスレッドが子プロセスを KILL し、端末の復元を試してからプロセスを終える
+/// （`process::exit` で `Terminal` の drop を通らない唯一の経路。rust-safety 2 章の例外として #3 の spec で合意済み。
+/// 端末が消えていれば復元の書き込みは失敗するだけで、生きていれば raw mode・alternate screen・カーソルが戻る）
+fn install_termination_flag(
+    live: LivePids,
+    cleaned_up: Arc<AtomicBool>,
+) -> Result<Arc<AtomicBool>> {
+    let flag = Arc::new(AtomicBool::new(false));
+    let handler_flag = Arc::clone(&flag);
+    ctrlc::set_handler(move || {
+        handler_flag.store(true, Ordering::Release);
+        let deadline = Instant::now() + EMERGENCY_GRACE;
+        while Instant::now() < deadline {
+            if cleaned_up.load(Ordering::Acquire) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        live.kill_all();
+        // 主スレッドが止まっているので、こちらで復元を試す。失敗は捨てる（端末が無いときは書けない）。
+        // 主スレッドが stdout のロックを持ったまま書き込みで止まっている場合もあるので、別スレッドで試し、
+        // RESTORE_WAIT だけ待ってから終える（復元が終わらなくてもプロセスは残さない）
+        let restore = std::thread::spawn(|| {
+            let _ = ratatui::try_restore();
+            let _ = execute!(io::stdout(), cursor::Show);
+            let _ = writeln!(io::stderr(), "runs: terminated by signal (forced)");
+        });
+        let deadline = Instant::now() + RESTORE_WAIT;
+        while Instant::now() < deadline && !restore.is_finished() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::process::exit(1);
+    })
+    .context("failed to install the signal handler")?;
+    Ok(flag)
 }
 
 fn event_loop(
@@ -86,10 +150,15 @@ fn event_loop(
     config_path: &Path,
     runner: &mut Runner,
     rx: &Receiver<RunnerEvent>,
+    terminated: &AtomicBool,
 ) -> Result<()> {
     let mut dirty = true;
     let mut last_draw = Instant::now();
     loop {
+        // シグナルで頼まれた終了。呼び出し側が全停止と復元をしてから、このメッセージを stderr に出す
+        if terminated.load(Ordering::Acquire) {
+            bail!("terminated by signal");
+        }
         // 入力・通知の処理でも現在時刻を使う（開始・終了時刻の記録）ので、描画の有無によらず毎ループ渡す
         let now = Instant::now();
         app.set_now(now);

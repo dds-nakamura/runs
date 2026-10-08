@@ -27,7 +27,8 @@ raw mode・alternate screen・カーソル非表示・マウスキャプチャ�
   （ガードを `try_init()` の前に作るか、`Err` の分岐で復元してから返す）
 - ratatui の panic hook と `try_restore()` が戻すのは raw mode と alternate screen だけ。
   - カーソル: 非表示にしたカーソルは `Terminal` の drop で戻る。`Terminal` が drop されない経路
-    （`std::process::exit`、`panic = "abort"`、別スレッドが保持）では戻らないので、その経路を作らない
+    （`std::process::exit`、`panic = "abort"`、別スレッドが保持）では戻らないので、その経路を作らない。
+    例外は `tui::install_termination_flag` の緊急終了だけ（端末が閉じて主スレッドが戻らないとき。`try_restore` とカーソルの表示を試してから `exit`。#3 で合意）
   - マウスキャプチャなどを追加で有効にしたら、その復元はガードと panic hook の両方に自分で入れる。
     自前の panic hook は `try_init()` より前に設定する（ratatui の hook が先に端末を復元してから呼ばれる）
 - ratatui の panic hook はどのスレッドの panic でも端末を復元する。ワーカースレッドが panic すると、

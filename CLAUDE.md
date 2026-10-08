@@ -53,13 +53,17 @@ clippy 警告を `#[allow(...)]` で黙らせる場合は理由コメント必�
   - `src/timefmt.rs`: 経過時間の短い表記（`12s` / `1m 12s` / `3m ago`。幅 7）
   - `src/ui.rs`: 描画（`draw(frame, app)`）と区画（`layout(area, app)`。`tui` が出力欄の高さを `App` に渡すのにも使う）。`TestBackend` に描ける
   - `src/tui.rs`: 端末ガード（`TerminalGuard`）とイベントループ（`run`: `event::poll(50 ms)` + チャネルの `try_recv`。時間の表示があるときは 1 秒ごとに描き直す）。
-    `Effect` の実行（プロセスは `runner`、`runs.toml` の再読み込みは `config::load_file`）
+    `Effect` の実行（プロセスは `runner`、`runs.toml` の再読み込みは `config::load_file`）。
+    SIGTERM / SIGHUP（Unix）と Ctrl+Break（Windows）は `ctrlc` のハンドラがフラグを立て、主スレッドが全停止と復元をしてから終了コード 1 で終わる。
+    端末が本当に閉じたとき（pty が消える）は crossterm の読み取りが戻らないので、ハンドラのスレッドが 10 秒後に子プロセスを KILL し、復元を試してから `process::exit(1)` する
+    （`Terminal` の drop を通らない唯一の経路。`rust-safety` 2 章の例外）
+    （Windows でタブを閉じる操作は間に合わない。既知の制限）
 - 設定ファイルは `runs.toml`（`[[command]]` の `name` / `command` / `cwd`、トップレベルの `shell` / `encoding`）。書き方は `runs --help`。リポジトリ直下のものは `runs` 自身の開発用
 - キー: `↑↓` / `jk` 選択、`Enter` 実行（実行中なら停止して再実行）、`s` 停止、`r` 再読み込み、`PageUp` / `PageDown` / `End` スクロール、`q` / Ctrl+C 終了
 - テストは実装と別ファイル: `src/<モジュール>/tests.rs`（層 1・2）、`tests/cli.rs`（層 3）。`tui` と `main` は層 3・4 で確認する。
   テスト専用のゲッターは `#[cfg(test)]` を付ける（本体で使われないと dead_code で clippy に落ちる）
 - 画面と CLI のメッセージは英語（ASCII）。出力は `writeln!` を使い、`println!` / `eprintln!` は使わない（閉じたパイプへ書くと panic する）
-- 依存: `ratatui` 0.30（`default-features = false`、feature は `crossterm` / `layout-cache` / `underline-color`）、`anyhow` 1、`serde` 1（derive）、`toml` 1.1（`default-features = false`）、`encoding_rs` 0.8。
+- 依存: `ratatui` 0.30（`default-features = false`、feature は `crossterm` / `layout-cache` / `underline-color`）、`anyhow` 1、`serde` 1（derive）、`toml` 1.1（`default-features = false`）、`encoding_rs` 0.8、`ctrlc` 3.5（`termination`）。
   crossterm（0.29）は直接依存にせず `ratatui::crossterm` を使う（ratatui とバージョンがずれるのを避ける。例外は `rust-safety` 8章）
 - 方針: 状態（モデル）・更新（入力→状態）・描画を分け、状態と更新は端末なしでテストできるようにする
 - 端末の初期化・復元は 1 か所（RAII ガード + panic hook）に閉じ込める。土台は `ratatui::try_init()` / `ratatui::try_restore()`。
