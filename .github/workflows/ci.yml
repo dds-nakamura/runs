@@ -1,0 +1,57 @@
+# CI: verify.sh --all を 3 OS の stable で実行し、Linux の MSRV 1.88 でビルドとテストを確認する。
+# 検証の内容は .claude/scripts/verify.sh が正（ここに cargo のコマンドを足さない。MSRV ジョブだけ例外）。
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # PR への連続 push は古い実行を止める。main への push では実行中のものを止めない
+  # （待機中の実行は同じ group で 1 件までしか残らない。短時間に 3 回 push すると 2 回目は置き換えられる）
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+defaults:
+  run:
+    shell: bash
+jobs:
+  verify:
+    name: verify (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      # cargo-deny はマイナー版まで固定する（設定書式や既定の変更で全 PR が止まるのを防ぐ。上げるときは PR で）
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.20
+      - run: bash .claude/scripts/verify.sh --all
+      - run: git diff --exit-code -- Cargo.lock
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked --workspace --all-targets --all-features
+      - run: cargo test --locked --workspace --all-features
+      - run: git diff --exit-code -- Cargo.lock
