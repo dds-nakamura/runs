@@ -27,6 +27,8 @@ const STOP_GRACE: Duration = Duration::from_secs(2);
 /// 停止コマンド（`kill` / `taskkill`。コマンドの数だけ順に起動する）と描画の分の余裕を足した値。
 /// これを過ぎたら主スレッドは端末の読み取りか描画で止まっていると見なし、ハンドラのスレッドが片付けて終了する
 const EMERGENCY_GRACE: Duration = Duration::from_secs(10);
+/// 緊急終了のとき、別スレッドでの端末の復元を待つ上限。
+const RESTORE_WAIT: Duration = Duration::from_millis(500);
 
 /// raw mode と alternate screen を有効にし、drop で必ず元に戻す。
 ///
@@ -106,7 +108,7 @@ pub fn run(app: &mut App, config: &Config) -> Result<()> {
 ///
 /// 例外は端末が本当に閉じたとき（SSH の切断など）。crossterm の端末の読み取りが戻らず、主スレッドがフラグを見に来られない。
 /// そのときは `EMERGENCY_GRACE` の後に、このスレッドが子プロセスを KILL し、端末の復元を試してからプロセスを終える
-/// （`process::exit` で `Terminal` の drop を通らない唯一の経路。rust-safety 2 章の例外として spec で合意済み。
+/// （`process::exit` で `Terminal` の drop を通らない唯一の経路。rust-safety 2 章の例外として #3 の spec で合意済み。
 /// 端末が消えていれば復元の書き込みは失敗するだけで、生きていれば raw mode・alternate screen・カーソルが戻る）
 fn install_termination_flag(
     live: LivePids,
@@ -124,10 +126,18 @@ fn install_termination_flag(
             std::thread::sleep(Duration::from_millis(100));
         }
         live.kill_all();
-        // 主スレッドが止まっているので、こちらで復元を試す。失敗は捨てる（端末が無いときは書けない）
-        let _ = ratatui::try_restore();
-        let _ = execute!(io::stdout(), cursor::Show);
-        let _ = writeln!(io::stderr(), "runs: terminated by signal (forced)");
+        // 主スレッドが止まっているので、こちらで復元を試す。失敗は捨てる（端末が無いときは書けない）。
+        // 主スレッドが stdout のロックを持ったまま書き込みで止まっている場合もあるので、別スレッドで試し、
+        // RESTORE_WAIT だけ待ってから終える（復元が終わらなくてもプロセスは残さない）
+        let restore = std::thread::spawn(|| {
+            let _ = ratatui::try_restore();
+            let _ = execute!(io::stdout(), cursor::Show);
+            let _ = writeln!(io::stderr(), "runs: terminated by signal (forced)");
+        });
+        let deadline = Instant::now() + RESTORE_WAIT;
+        while Instant::now() < deadline && !restore.is_finished() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         std::process::exit(1);
     })
     .context("failed to install the signal handler")?;

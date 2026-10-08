@@ -33,9 +33,12 @@ Windows でタブ・ウィンドウを閉じる操作は `ctrlc` の実装上間
 
 - **reviewer（2 回目）の Important 2 件への対応**
   1. 端末が生きているのに片付けが 5 秒を超えると `process::exit` で端末が壊れたまま残る → `EMERGENCY_GRACE` を 10 秒にし、`exit` の前に `try_restore` とカーソルの表示を試す。
-     rust-safety 2 章の例外として spec の「適用した規約」と懸念点 5 に記載（ユーザーの承認待ち）
+     rust-safety 2 章の例外として spec の「適用した規約」と懸念点 5 に記載（2026-10-08 にユーザーが承認）
   2. `pty-check.sh` の「端末を閉じる」ケースの `pkill -x script` / `pkill -x runs` が無関係なプロセスを殺す → `setsid` で新しいセッションにし、セッション ID で数え・殺す。
      `BIN` を絶対パスに、`script -c` の中では export 済みの `BIN` を展開
+
+- **reviewer（3 回目）**: Important 0。Nit で、緊急時の復元が主スレッドの持つ stdout のロック待ちで止まりうる点 → 復元を別スレッドで試し 0.5 秒待ってから `exit`。
+  spec / intent の古い記述（5 秒、終了までの時間の例外、変更ファイル）と Markdown の表の崩れ、`pty-check.sh` の `local` を直した
 
 ## 変更するファイル
 

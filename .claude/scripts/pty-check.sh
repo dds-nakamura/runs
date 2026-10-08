@@ -91,23 +91,24 @@ run_hangup_case() {
   # & の子はセッションリーダーではないので setsid は fork せずに exec し、$! がそのままセッション ID になる
   setsid bash -c 'cd "$WORK_DIR" && (sleep 1.5; printf "\r"; sleep 30) | script -qec '"'"'stty cols 80 rows 24; exec "$BIN"'"'"' /dev/null > /dev/null' &
   sid=$!
-  # script は子のために別のセッションを作るので、runs はカレントディレクトリ（一時ディレクトリ）で見分ける
-  count_runs() {
-    local p c=0
-    for p in $(pgrep -x runs); do
-      [ "$(readlink "/proc/$p/cwd" 2>/dev/null)" = "$work" ] && c=$((c + 1))
-    done
-    echo "$c"
-  }
   sleep 3
   echo "before: RUNS=$(count_runs) SLEEPS=$(pgrep -fc "^sleep $n$" || true)"
   pkill -KILL -s "$sid" -x script
   sleep 12
   echo "after: RUNS=$(count_runs) SLEEPS=$(pgrep -fc "^sleep $n$" || true)"
+  local p
   for p in $(pgrep -x runs); do
     [ "$(readlink "/proc/$p/cwd" 2>/dev/null)" = "$work" ] && kill -KILL "$p" 2>/dev/null
   done
   pkill -KILL -s "$sid" 2>/dev/null; pkill -f "^sleep $n$" 2>/dev/null
   rm -rf "$work"
+}
+# script は子のために別のセッションを作るので、runs はカレントディレクトリ（一時ディレクトリ $work）で見分ける
+count_runs() {
+  local p c=0
+  for p in $(pgrep -x runs); do
+    [ "$(readlink "/proc/$p/cwd" 2>/dev/null)" = "$work" ] && c=$((c + 1))
+  done
+  echo "$c"
 }
 run_hangup_case
