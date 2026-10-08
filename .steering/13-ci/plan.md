@@ -18,7 +18,7 @@ CLAUDE.md / `.claude/README.md` の社内固有名を一般的な表現に直す
 - `LICENSE-MIT`（新規）: MIT 全文。`Copyright (c) 2026 dds-nakamura`
 - `LICENSE-APACHE`（新規）: Apache-2.0 全文。`curl -fsSL https://www.apache.org/licenses/LICENSE-2.0.txt` で取得し、そのまま置く（手打ちしない）
 - `CLAUDE.md`（変更）:
-  - L8: 「EVECLOUD とは独立した…evecloud-* のスキルやエージェントは適用しない。」→「他のプロジェクトの規約・課題管理・スキル・エージェントは適用しない単独プロジェクト。」
+  - L8: 旧表記（元のプロジェクト名・課題管理のキー・元のプラグイン名を含む「…とは独立した単独プロジェクト。…は適用しない。」）→「他のプロジェクトの規約・課題管理・スキル・エージェントは適用しない単独プロジェクト。」
   - L9: 「（private。課題は…」→「（public。課題は…」
   - L15 の CI 相当の行: 「+ `cargo deny check`（導入時））」→「+ `cargo deny check`）。CI（GitHub Actions）はこれを 3 OS で実行し、CI では cargo-deny が無いと失敗する」
   - L15 の直後に 1 行追加: 「CI の結果: PR の Checks または `gh pr checks`。落ちたジョブのログは `gh run view <run-id> --log-failed`。手元での再現は `verify.sh --all`（cargo-deny は `cargo install --locked cargo-deny`）、MSRV は `rustup toolchain install 1.88 && cargo +1.88 test --locked --workspace --all-features`」
@@ -27,12 +27,12 @@ CLAUDE.md / `.claude/README.md` の社内固有名を一般的な表現に直す
   - L96: 「（`rust-version`。1.88 のツールチェーンでの実ビルドは未検証）」→「（`rust-version`。CI の `msrv` ジョブで 1.88 のビルドとテストを確認）」
   - L98: 「（private）」→「（public。#13 で公開）」
 - `.claude/README.md`（変更）:
-  - L3-4: 「`evecloud-sdlc` プラグイン（…）を、EVECLOUD から独立した Rust ターミナルアプリ向けに作り直したものです。」→「社内の開発フロー用プラグイン（[The AI-Native SDLC Playbook](…) に基づく）を、この Rust ターミナルアプリ向けに作り直したものです。」
+  - L3-4: 「<元のプラグイン名> プラグイン（…）を、<元のプロジェクト名> から独立した Rust ターミナルアプリ向けに作り直したものです。」→「既存の開発フロー用プラグイン（[The AI-Native SDLC Playbook](…) に基づく）を、この Rust ターミナルアプリ向けに作り直したものです。」（reviewer の Nit で「社内の」→「既存の」）
   - L18: 「cargo-deny（任意）」→「cargo-deny（任意。CI では必須）」
-  - L20: 「`evecloud-sdlc`・`evecloud-config` プラグインは…（フックの二重実行と EVECLOUD 前提のスキル・警告を避けるため）」→「元のプラグインは `.claude/settings.json` の `enabledPlugins` でこのプロジェクトでは無効にしています（フックの二重実行と、別プロジェクト前提のスキル・警告を避けるため）」
-  - L22 見出し「evecloud-sdlc からの主な変更」→「元のプラグインからの主な変更」、L24 の列名 `evecloud-sdlc` → `元のプラグイン`
-  - L27: 「Backlog `THEMIS_GO` / Backlog Git 固定」→「Backlog / Backlog Git 固定」
-  - L33: 「evecloud-security（API・認証・ログ）」→「security（API・認証・ログ）」
+  - L20: 「<元のプラグイン 2 件> は…（フックの二重実行と <元のプロジェクト名> 前提のスキル・警告を避けるため）」→「元のプラグインは `.claude/settings.json` の `enabledPlugins` でこのプロジェクトでは無効にしています（フックの二重実行と、別プロジェクト前提のスキル・警告を避けるため）」
+  - L22 見出し「<元のプラグイン名> からの主な変更」→「元のプラグインからの主な変更」、L24 の列名 `<元のプラグイン名>` → `元のプラグイン`
+  - L27: 「Backlog `<プロジェクトキー>` / Backlog Git 固定」→「Backlog / Backlog Git 固定」
+  - L33: 「<元のプラグイン名>-security（API・認証・ログ）」→「security（API・認証・ログ）」
   - 「構成」表の末尾付近に行を追加: `| .github/workflows/ci.yml（ルート） | CI。3 OS の stable で verify.sh --all、Linux の 1.88 で check / test |`
   - `.claude/settings.json` の `enabledPlugins` のキー名はプラグイン ID そのものなので変えない（機能に必要）
 - `.steering/13-ci/plan.md`（新規）: この計画。`.steering/13-ci/spec.md`: 実装中にずれたら該当節を直す
@@ -162,7 +162,7 @@ unknown-git = "deny"
 - PR の CI: `gh pr checks` で `verify (ubuntu-latest)` / `verify (windows-latest)` / `verify (macos-latest)` / `msrv` が pass（macOS が別課題行きの場合は、その事実と issue 番号を記録）
 - `gh run view <id> --log` の verify ジョブに `VERIFY OK` が出ている（3 OS）
 - `git diff --exit-code Cargo.lock` のステップが pass（3 OS + msrv）
-- CLAUDE.md / `.claude/README.md` に `EVECLOUD` / `THEMIS` / `evecloud` が残っていない（`git grep` で `settings.json` 以外 0 件）
+- 追跡ファイル全体（`.steering/` を含む）に元のプロジェクト名・元のプラグイン名・課題管理のプロジェクトキー・会社のメールドメインが残っていない（`git grep -i` で 0 件。`.claude/settings.json` の扱いは C5 の追加判断に従う。reviewer 指摘で範囲を CLAUDE.md / README からリポジトリ全体に広げた）
 - 公開後（ユーザー操作後）: `gh api repos/dds-nakamura/runs/rulesets` がルールセットを返す。`gh api repos/dds-nakamura/runs --jq .visibility` が `public`
 
 ## 実装中に分かったこと
@@ -174,6 +174,11 @@ unknown-git = "deny"
 - PR #14 の初回 CI（run 37737000249、2026-10-08）: `verify (ubuntu-latest)` 1m09s / `verify (windows-latest)` 2m33s / `verify (macos-latest)` 52s / `msrv` 1m06s、すべて pass。3 OS のログに `VERIFY OK`・`advisories ok, bans ok, licenses ok, sources ok`・テスト 144 + 9 件。stable は rustc 1.99.0、cargo-deny は 0.20.2（手元と同じ版）。`msrv` は rustc 1.88.0 で check と test が通過（MSRV 1.88 の実ビルドが初めて確認できた）
 - リスク「macOS のテスト失敗」は顕在化しなかった。`kill -s TERM -- -<pid>` / `pgrep -f` を使う孫プロセス停止のテストも macOS で通った。別課題の起票は不要
 - `Cargo.lock` の確認ステップは 4 ジョブとも pass（`--locked` の漏れ無し）
+- reviewer 1 回目（Important 1 / Minor 4 / Nit 5）への対応:
+  - Important: spec / plan に書き写していた固有名と会社ドメインを伏せ字にし、spec C5 の事実欄を訂正。`settings.json` のプラグイン ID は `settings.local.json` へ移動（ユーザー判断）。CLAUDE.md の Conventions に 1 行追加
+  - Minor: spec の advisories の記述を「エラーになる」に訂正。`ci.yml` で `cargo-deny@0.20` に固定、`concurrency` のグループに `github.workflow` を足し `cancel-in-progress` を PR のときだけに。LICENSE の著作権者は個人名義のまま（ユーザー判断）
+  - Nit: `verify.sh` の先頭コメントと `CI` 判定のコメント、`persist-credentials: false`、`wildcards = "deny"`（手元の `cargo deny check` で ok）、README の「社内の」→「既存の」
+  - 変更ファイルが plan の表から増えた: `.claude/settings.json`（`enabledPlugins` の削除）、`.claude/settings.local.json`（新規、gitignore）
 
 ## 並行可能な作業
 

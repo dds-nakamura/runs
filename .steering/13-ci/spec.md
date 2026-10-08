@@ -41,7 +41,7 @@
 | `.github/workflows/ci.yml` | 新規。下記のジョブ構成 |
 | `deny.toml` | 新規。下記のポリシー |
 | `.claude/scripts/verify.sh` | `cargo deny` の節: 未導入のとき `CI` が設定されていれば `fail`、無ければ従来の `warn` |
-| `CLAUDE.md` | Commands に CI の 2 行、未確定事項の 3 件を更新、ブランチ保護の運用（C1）と公開リポジトリであること（C5）を記載。社内固有名（EVECLOUD / THEMIS_GO）の扱いは C5 の判断に従う |
+| `CLAUDE.md` | Commands に CI の 2 行、未確定事項の 3 件を更新、ブランチ保護の運用（C1）と公開リポジトリであること（C5）を記載。社内固有名の扱いは C5 の判断に従う |
 | `.steering/13-ci/intent.md` | C1 / C5 の判断を「制約」と「未解決の問い」に反映 |
 | `LICENSE-MIT` / `LICENSE-APACHE` | 新規。MIT と Apache-2.0 の全文（著作権者は GitHub ID `dds-nakamura`、年は 2026） |
 | `Cargo.toml` | `license = "MIT OR Apache-2.0"` を足す（メタデータのみ。依存・feature は変えない） |
@@ -103,7 +103,7 @@ cargo-deny は Cargo.lock 全体ではなく、`runs` の feature で解決し�
 |---|---|
 | `[graph]` | `all-features = true`（verify と同じ条件）。`targets` は指定しない（3 OS の依存をすべて見る） |
 | `[licenses]` | `allow` に `MIT` / `Apache-2.0` / `Apache-2.0 WITH LLVM-exception` / `BSD-3-Clause` / `Unicode-3.0` / `Zlib`。`OR` 式はいずれか 1 つが通れば可（`MIT OR Apache-2.0 OR LGPL-2.1-or-later` は MIT で通る）。`Unicode-DFS-2016`（非推奨 ID。wezterm-bidi / finl_unicode）と `WTFPL`（terminfo）はグラフに現れた場合だけ足す。`runs` 自身は `Cargo.toml` に `license = "MIT OR Apache-2.0"` を足すので許可リストで通る（C5 の判断。`private.ignore` は使わない） |
-| `[advisories]` | 既定の RustSec DB。`yanked = "deny"`。`unmaintained` / `unsound` は既定（警告）。該当が出たら `ignore` に理由付きで入れる（spec の合意事項） |
+| `[advisories]` | 既定の RustSec DB。`yanked = "deny"`。cargo-deny 0.16 以降、`ignore` に無い勧告（unmaintained / unsound を含む）はすべて**エラー**になり、無関係な PR でも `verify` が落ちる（安全側）。該当が出たら `ignore` に理由付きで入れる（spec の合意事項）。（reviewer 指摘で「既定は警告」から訂正、2026-10-08） |
 | `[bans]` | `multiple-versions = "warn"`（syn 1/2、nix 3 版、thiserror 1/2、getrandom 2 版が既に重複している。`deny` にすると今は通らない）。`wildcards = "allow"` |
 | `[sources]` | `unknown-registry = "deny"`、`unknown-git = "deny"`。crates.io 以外から取らない |
 
@@ -218,14 +218,19 @@ Actions のバージョン更新と依存の更新は自動化しない。`cargo
 
 | 項目 | 事実 | 選択肢 |
 |---|---|---|
-| コミットの author / committer メール | 全履歴 134 コミットのうち 122 件が会社のメールアドレス（`@dds.co.jp`）。残りは GitHub の noreply | a. そのまま公開する（会社のアドレスが公開の履歴に載る）／ b. 公開前に履歴を書き換えて noreply アドレスにする（`git filter-repo`。全コミットのハッシュが変わり force push が要る。**ユーザー自身の操作**。force push は hook で禁止しているので Claude は行わない）／ c. 今後のコミットだけ `git config user.email` を noreply に変える（過去分は残る） |
-| 社内固有の名前 | `CLAUDE.md` 冒頭に「EVECLOUD」「Backlog `THEMIS_GO`」「evecloud-*」が出てくる（「このプロジェクトでは適用しない」という文脈）。`.claude/` のハーネスは evecloud-sdlc プラグインを元に作った旨は記憶ファイルにあり、リポジトリ内には無い | a. そのままにする／ b. CLAUDE.md の該当行を「別プロジェクトの規約は適用しない」のような一般的な表現に書き換える（#13 の CLAUDE.md 変更に含める） |
+| コミットの author / committer メール | 全履歴 134 コミットのうち 122 件が会社のメールアドレス（会社ドメイン）。残りは GitHub の noreply | a. そのまま公開する（会社のアドレスが公開の履歴に載る）／ b. 公開前に履歴を書き換えて noreply アドレスにする（`git filter-repo`。全コミットのハッシュが変わり force push が要る。**ユーザー自身の操作**。force push は hook で禁止しているので Claude は行わない）／ c. 今後のコミットだけ `git config user.email` を noreply に変える（過去分は残る） |
+| 社内固有の名前 | `CLAUDE.md` 冒頭に元のプロジェクト名・Backlog のプロジェクトキー・元のプラグイン名が出てくる（「このプロジェクトでは適用しない」という文脈）。**訂正（reviewer 指摘、2026-10-08）**: 当初「リポジトリ内では CLAUDE.md だけ」と書いたが誤りで、`.claude/README.md`（7 か所）と `.claude/settings.json` の `enabledPlugins`（プラグイン ID 2 件）にもあった。また CLAUDE.md の旧版は履歴に残る（「履歴を書き換えない」判断の範囲内）。同じ PR で追加した spec / plan にも書き写していたので伏せ字にした | a. そのままにする／ b. CLAUDE.md の該当行を「別プロジェクトの規約は適用しない」のような一般的な表現に書き換える（#13 の CLAUDE.md 変更に含める） |
 | 秘密情報 | トークン・鍵・パスワードらしき文字列は追跡ファイルに無い（`ghp_` / `github_pat_` / `AKIA` / 秘密鍵ヘッダ / `api_key=` を検索）。`.claude/settings.local.json` と `*.local.md` は gitignore 済み | 対応不要 |
 | LICENSE | 無い。public でライセンスが無いと「全権利留保」で、他人は閲覧しかできない。`Cargo.toml` にも `license` 欄が無い | a. `MIT OR Apache-2.0`（Rust の慣例。`LICENSE-MIT` と `LICENSE-APACHE` を置く）／ b. MIT のみ／ c. 置かない（閲覧のみ可） |
 | `.steering/` と `.claude/` | 設計文書・ハーネス（hooks / skills / agents / REVIEW.md）が公開される。作成者欄にユーザー名 `nakamura_kouji` がある | a. そのまま／ b. 作成者欄を GitHub ID に変える |
 | 配布時の著作権表示 | 未確定事項「配布方法」のまま。public 化はソースの公開であって、バイナリ配布ではないので今回は不要 | 対応不要（`deny.toml` の許可リストが将来の一覧になる） |
 
 **判断済み（2026-10-08、ユーザー）**: メールは c（このリポジトリの `git config user.email` を GitHub の noreply アドレスにする。過去分はそのまま）、固有名は b（CLAUDE.md を「他プロジェクトの規約・スキルは適用しない」のような一般的な表現に。#13 の CLAUDE.md 変更に含める）、LICENSE は a（`MIT OR Apache-2.0`。`LICENSE-MIT` / `LICENSE-APACHE` を置き、`Cargo.toml` に `license = "MIT OR Apache-2.0"` を足す。これにより `deny.toml` の `private.ignore` は不要）、`.steering` / `.claude` はそのまま。履歴の書き換えはしない。
+
+**追加判断（reviewer 指摘を受けて、2026-10-08、ユーザー）**:
+- `.claude/settings.json` の `enabledPlugins`（元のプラグイン ID 2 件）は、gitignore 済みの `.claude/settings.local.json` に移す。追跡ファイルから実名が消える代わりに、clone 直後はそのプラグインが有効になる（手順は `.claude/README.md` に記載。開発者は本人のみ）
+- LICENSE の著作権者は個人の GitHub ID（`dds-nakamura`）のままでよい。個人のプロジェクトとして判断（職務著作の観点は確認済み。法的助言ではない）
+- 同じ PR で追加した spec / plan に固有名を書き写していたので伏せ字にし、CLAUDE.md の Conventions に「追跡ファイルに固有名・メールアドレスを書かない」を足した
 
 ## intent の未解決の問い
 

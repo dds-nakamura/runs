@@ -1,6 +1,6 @@
 # runs の Claude Code ハーネス
 
-社内の開発フロー用プラグイン（[The AI-Native SDLC Playbook](https://claude.com/blog/the-ai-native-sdlc-playbook) に基づく）を、
+既存の開発フロー用プラグイン（[The AI-Native SDLC Playbook](https://claude.com/blog/the-ai-native-sdlc-playbook) に基づく）を、
 この Rust ターミナルアプリ向けに作り直したものです。プラグインではなくプロジェクトの `.claude/` に直接置いているため、
 `/sdlc-setup` のような導入手順は不要です（clone して Claude Code を起動すれば有効になります）。
 
@@ -17,7 +17,8 @@
 | GitHub CLI（`gh`） | issue の参照・PR 作成（`winget install GitHub.cli` → `gh auth login`） |
 | cargo-deny（任意。CI では必須） | `verify.sh --all` での依存のライセンス・脆弱性確認（`cargo install --locked cargo-deny`） |
 
-元のプラグインは `.claude/settings.json` の `enabledPlugins` でこのプロジェクトでは無効にしています（フックの二重実行と、別プロジェクト前提のスキル・警告を避けるため）。
+元のプラグインを使っている環境では、`.claude/settings.local.json`（gitignore 済み）の `enabledPlugins` でそのプラグインを `false` にしてください
+（フックの二重実行と、別プロジェクト前提のスキル・警告を避けるため。プラグイン ID は公開リポジトリに置かないので追跡ファイルには書いていません）。
 
 ## 元のプラグインからの主な変更
 
@@ -54,7 +55,8 @@
 | `CLAUDE.md`（ルート） | コマンド・開発フロー・検証・規約・Claude がよく間違えること・未確定事項 |
 | `.github/workflows/ci.yml`（ルート） | CI。3 OS の stable で `verify.sh --all`、Linux の Rust 1.88（MSRV）で `cargo check` / `cargo test` |
 | `REVIEW.md`（ルート） | レビュー方針（Bugs / Security / Compliance の 3 パス、Important の定義、Nit 上限） |
-| `settings.json` | permissions・hooks・プラグインの無効化 |
+| `settings.json` | permissions・hooks |
+| `settings.local.json`（gitignore） | 個人環境の設定（元のプラグインの無効化など） |
 | `scripts/verify.sh` | 検証コマンド（成功時のみ `VERIFY OK` と `state/verified-at` の更新） |
 | `scripts/test-lock.mjs` | テストロックの操作 |
 | `scripts/pty-check.sh` | 疑似端末（Linux / WSL の `script` コマンド）で起動し、キー入力・終了コード・終了後の端末モードを表示する |
