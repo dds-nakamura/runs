@@ -21,7 +21,8 @@ confidence-threshold = 0.8
 
 [bans]
 multiple-versions = "warn"
-wildcards = "allow"
+# `foo = "*"` のような版指定を禁止する。path 依存を足すときは allow-wildcard-paths = true を併用する
+wildcards = "deny"
 
 [sources]
 unknown-registry = "deny"

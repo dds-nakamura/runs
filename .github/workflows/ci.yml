@@ -8,8 +8,9 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # PR への連続 push は古い実行を止める。main への push は結果を残したいので止めない
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 env:
   CARGO_TERM_COLOR: never
   CARGO_INCREMENTAL: 0
@@ -28,13 +29,16 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      # cargo-deny はマイナー版まで固定する（設定書式や既定の変更で全 PR が止まるのを防ぐ。上げるときは PR で）
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny
+          tool: cargo-deny@0.20
       - run: bash .claude/scripts/verify.sh --all
       - run: git diff --exit-code -- Cargo.lock
   msrv:
@@ -43,6 +47,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --locked --workspace --all-targets --all-features

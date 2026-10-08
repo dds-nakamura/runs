@@ -2,7 +2,8 @@
 # 検証をまとめて行う（フィードバックループ用の単一コマンド）。
 #
 #   bash .claude/scripts/verify.sh          fmt / clippy / test（通常はこれ）
-#   bash .claude/scripts/verify.sh --all    CI 相当（上記を --locked で実行 + doc 警告ゼロ + cargo deny（導入時））
+#   bash .claude/scripts/verify.sh --all    CI 相当（上記を --locked で実行 + doc 警告ゼロ + cargo deny）
+#                                           cargo-deny が無いとき: 環境変数 CI があれば失敗、無ければ WARN で省略
 #
 # 成功時のみ最終行に "VERIFY OK" を出し、.claude/state/verified-at を更新する
 # （Stop フックはこの時刻と最終編集時刻を比べて検証漏れを検出する）。
@@ -61,6 +62,7 @@ if [ "$MODE" = "all" ]; then
   if cargo deny --version >/dev/null 2>&1; then
     cargo deny check || fail "cargo deny"
   elif [ -n "${CI:-}" ]; then
+    # 値ではなく有無で判定する（GitHub Actions は CI=true を設定する。手元で CI=0 を設定していても失敗側になる）
     fail "cargo deny（CI では必須。ワークフローで cargo-deny を導入する）"
   else
     warn "cargo-deny 未導入のため依存（ライセンス・脆弱性）の確認を省略（cargo install --locked cargo-deny）"
