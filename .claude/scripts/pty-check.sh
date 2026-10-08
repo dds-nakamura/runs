@@ -66,6 +66,8 @@ run_case "--version をパイプへ（EXIT=0）" "true" \
 SIGNAL_BODY='stty cols 80 rows 24; "$BIN" < /dev/tty & pid=$!; sleep 2; kill -s SIGNAME "$pid"; wait "$pid"; echo "EXIT=$?"; '"$MODES"
 run_case "SIGTERM で終了（EXIT=1、terminated by signal、モードが戻る）" "true" "${SIGNAL_BODY//SIGNAME/TERM}"
 run_case "SIGHUP で終了（EXIT=1、モードが戻る）" "true" "${SIGNAL_BODY//SIGNAME/HUP}"
-# sleep 300 を実行中に SIGTERM → 全停止してから終了。SLEEPS=0 が正しい
-run_case "実行中のコマンドを止めてから SIGTERM で終了（EXIT=1、SLEEPS=0）" "sleep 0.5; printf '\r'" \
-  'work=$(mktemp -d); printf "[[command]]\nname = \"sleeper\"\ncommand = \"sleep 300; echo done\"\n" > "$work/runs.toml"; cd "$work"; stty cols 80 rows 24; "$BIN" < /dev/tty & pid=$!; sleep 3; kill -s TERM "$pid"; wait "$pid"; echo "EXIT=$?"; '"$MODES"'; echo "SLEEPS=$(pgrep -fc "^sleep 300$" || true)"; cd /; rm -rf "$work"' 30
+run_case "SIGINT（kill -INT）で終了（EXIT=1、モードが戻る）" "true" "${SIGNAL_BODY//SIGNAME/INT}"
+# sleep 300 を実行中にシグナル → 全停止してから終了。SLEEPS=0 が正しく、TOOK_MS は全停止の上限（3000 ms）+ 起動の時間に収まる
+STOP_BODY='work=$(mktemp -d); printf "[[command]]\nname = \"sleeper\"\ncommand = \"sleep 300; echo done\"\n" > "$work/runs.toml"; cd "$work"; stty cols 80 rows 24; "$BIN" < /dev/tty & pid=$!; sleep 3; start=$(date +%s%N); kill -s SIGNAME "$pid"; wait "$pid"; echo "EXIT=$?"; echo "TOOK_MS=$(( ($(date +%s%N) - start) / 1000000 ))"; '"$MODES"'; echo "SLEEPS=$(pgrep -fc "^sleep 300$" || true)"; cd /; rm -rf "$work"'
+run_case "実行中のコマンドを止めてから SIGTERM で終了（EXIT=1、SLEEPS=0、TOOK_MS が 3000 以下）" "sleep 0.5; printf '\r'" "${STOP_BODY//SIGNAME/TERM}" 30
+run_case "実行中のコマンドを止めてから SIGHUP で終了（EXIT=1、SLEEPS=0）" "sleep 0.5; printf '\r'" "${STOP_BODY//SIGNAME/HUP}" 30
