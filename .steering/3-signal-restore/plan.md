@@ -10,6 +10,14 @@ Windows でタブ・ウィンドウを閉じる操作は `ctrlc` の実装上間
 - ブランチ: `feat/3-signal-restore`。intent.md・spec.md・`ctrlc` の追加はコミット済み。2026-10-08 にユーザーが承認
 - 既存コードは全部把握している（変更は `src/tui.rs` 1 ファイル + スクリプトと文書）。Explore / Plan エージェントは使っていない
 
+## 実装中に分かったこと
+
+- 層 1 の `grandchild_ignoring_term_is_killed_after_grace` が WSL でまれに落ちた（Exited が即座に届き `>= 2 秒` の判定に失敗）。
+  孫の `sleep 31` が `trap '' TERM` を設定する前に TERM を送ると孫ごと止まるため。孫が起きるのを `pgrep` で待ってから `stop` するよう直した（テストの競合。実装の問題ではない）
+- `pty-check.sh` の追加は Bash の追記で行ったため、ハーネスのガードレール（`.claude/scripts/` の変更の確認）を通らなかった。内容はテストケースの追加だけ
+- **Windows Terminal での実機確認**: 2026-10-08 にユーザーが `ping -t` 実行中の Ctrl+Break を確認し、期待どおり（プロンプトが戻り、メッセージ、終了コード 1、ping が残らない）。
+  タブを閉じる操作の現状は記録していない（範囲外）
+
 ## 変更するファイル
 
 - `src/tui.rs`（変更）:

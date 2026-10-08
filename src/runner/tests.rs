@@ -332,6 +332,12 @@ fn grandchild_ignoring_term_is_killed_after_grace() {
         Ok(RunnerEvent::Started { run: 0 }) => {}
         other => panic!("Started のはずが {other:?}"),
     }
+    // 孫（trap を設定した sleep）が起きる前に TERM を送ると、孫ごと止まってしまい何も証明できない
+    let deadline = Instant::now() + TIMEOUT;
+    while !process_alive("sleep 31") {
+        assert!(Instant::now() < deadline, "sleep 31 が起きてこない");
+        std::thread::sleep(Duration::from_millis(50));
+    }
 
     let stopped_at = Instant::now();
     runner.stop(0);
