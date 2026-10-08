@@ -3,7 +3,7 @@
 //! 停止は外部コマンド（Unix: `kill`、Windows: `taskkill`）で木ごと行う。`libc` や Job Object は `unsafe` が要るため使わない。
 //! 外部コマンドが使えないときの最終手段は `Child::kill`（直接の子だけ）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -61,10 +61,37 @@ struct RunningProcess {
     waiter: JoinHandle<()>,
 }
 
+/// 生きている子プロセスの pid。シグナルのハンドラのスレッドが、主スレッドが片付けられないときに直接 KILL するために共有する
+#[derive(Clone, Default)]
+pub struct LivePids(Arc<Mutex<HashSet<u32>>>);
+
+impl LivePids {
+    fn insert(&self, pid: u32) {
+        self.lock().insert(pid);
+    }
+
+    fn remove(&self, pid: u32) {
+        self.lock().remove(&pid);
+    }
+
+    /// 全部を強制終了する（Unix はプロセスグループごと、Windows は木ごと）。待たない
+    pub fn kill_all(&self) {
+        for pid in self.lock().iter() {
+            let _ = force_kill(*pid);
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, HashSet<u32>> {
+        // poison でも中身（pid の集合）はそのまま使える
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
 pub struct Runner {
     tx: Sender<RunnerEvent>,
     shell: Vec<String>,
     running: HashMap<RunId, RunningProcess>,
+    live: LivePids,
 }
 
 impl Runner {
@@ -75,9 +102,15 @@ impl Runner {
                 tx,
                 shell,
                 running: HashMap::new(),
+                live: LivePids::default(),
             },
             rx,
         )
+    }
+
+    /// 生きている子プロセスの pid の一覧（共有）。
+    pub fn live_pids(&self) -> LivePids {
+        self.live.clone()
     }
 
     /// 起動する。失敗は `SpawnFailed` として通知する。実行中なら何もしない
@@ -201,6 +234,7 @@ impl Runner {
     /// 出力と終了を見張るスレッドを立てる。
     fn watch(&self, run: RunId, mut child: Child) -> RunningProcess {
         let pid = child.id();
+        self.live.insert(pid);
         let streams: [Option<Box<dyn Read + Send>>; 2] = [
             child
                 .stdout
@@ -224,6 +258,7 @@ impl Runner {
             let child = Arc::clone(&child);
             let finished = Arc::clone(&finished);
             let stop_requested = Arc::clone(&stop_requested);
+            let live = self.live.clone();
             thread::spawn(move || {
                 // ブロックする wait ではなくポーリングにして、Runner 側が Child::kill を使えるようにする
                 let result = loop {
@@ -246,6 +281,7 @@ impl Runner {
                 if stop_requested.load(Ordering::Acquire) {
                     wait_for_group_exit(pid, STOP_GRACE + FORCE_GRACE);
                 }
+                live.remove(pid);
                 finished.store(true, Ordering::Release);
                 let event = match result {
                     Ok(status) => RunnerEvent::Exited { run, status },

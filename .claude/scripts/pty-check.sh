@@ -67,7 +67,29 @@ SIGNAL_BODY='stty cols 80 rows 24; "$BIN" < /dev/tty & pid=$!; sleep 2; kill -s 
 run_case "SIGTERM で終了（EXIT=1、terminated by signal、モードが戻る）" "true" "${SIGNAL_BODY//SIGNAME/TERM}"
 run_case "SIGHUP で終了（EXIT=1、モードが戻る）" "true" "${SIGNAL_BODY//SIGNAME/HUP}"
 run_case "SIGINT（kill -INT）で終了（EXIT=1、モードが戻る）" "true" "${SIGNAL_BODY//SIGNAME/INT}"
-# sleep 300 を実行中にシグナル → 全停止してから終了。SLEEPS=0 が正しく、TOOK_MS は全停止の上限（3000 ms）+ 起動の時間に収まる
-STOP_BODY='work=$(mktemp -d); printf "[[command]]\nname = \"sleeper\"\ncommand = \"sleep 300; echo done\"\n" > "$work/runs.toml"; cd "$work"; stty cols 80 rows 24; "$BIN" < /dev/tty & pid=$!; sleep 3; start=$(date +%s%N); kill -s SIGNAME "$pid"; wait "$pid"; echo "EXIT=$?"; echo "TOOK_MS=$(( ($(date +%s%N) - start) / 1000000 ))"; '"$MODES"'; echo "SLEEPS=$(pgrep -fc "^sleep 300$" || true)"; cd /; rm -rf "$work"'
+# 長い sleep を実行中にシグナル → 全停止してから終了。SLEEPS=0 が正しく、TOOK_MS は全停止の上限（3000 ms）に収まる。
+# sleep の秒数は毎回変えて（1000 + RANDOM）、無関係な sleep を数えないようにする
+STOP_BODY='work=$(mktemp -d); n=$((1000 + RANDOM)); printf "[[command]]\nname = \"sleeper\"\ncommand = \"sleep $n; echo done\"\n" > "$work/runs.toml"; cd "$work"; stty cols 80 rows 24; "$BIN" < /dev/tty & pid=$!; sleep 3; start=$(date +%s%N); kill -s SIGNAME "$pid"; wait "$pid"; echo "EXIT=$?"; echo "TOOK_MS=$(( ($(date +%s%N) - start) / 1000000 ))"; '"$MODES"'; echo "SLEEPS=$(pgrep -fc "^sleep $n$" || true)"; cd /; rm -rf "$work"'
 run_case "実行中のコマンドを止めてから SIGTERM で終了（EXIT=1、SLEEPS=0、TOOK_MS が 3000 以下）" "sleep 0.5; printf '\r'" "${STOP_BODY//SIGNAME/TERM}" 30
 run_case "実行中のコマンドを止めてから SIGHUP で終了（EXIT=1、SLEEPS=0）" "sleep 0.5; printf '\r'" "${STOP_BODY//SIGNAME/HUP}" 30
+
+# 端末を本当に閉じる（script を SIGKILL して pty のマスターを閉じる）。`kill -s HUP` では端末が生きているので、この経路は別に確かめる。
+# crossterm の読み取りが戻らず主スレッドが片付けられないため、ハンドラのスレッドが EMERGENCY_GRACE（5 秒）の後に子プロセスを KILL して終わる。
+# 期待: 7 秒後に RUNS=0（runs が残っていない）、SLEEPS=0
+run_hangup_case() {
+  local name="端末を閉じる（pty のマスターを閉じる。7 秒後に RUNS=0、SLEEPS=0）"
+  [[ "$name" =~ $FILTER ]] || return 0
+  echo "=== $name"
+  local work n
+  work=$(mktemp -d); n=$((1000 + RANDOM))
+  printf '[[command]]\nname = "sleeper"\ncommand = "sleep %s; echo done"\n' "$n" > "$work/runs.toml"
+  ( cd "$work" && (sleep 1.5; printf '\r'; sleep 30) | script -qec "stty cols 80 rows 24; exec \"$BIN\"" /dev/null > /dev/null ) &
+  sleep 3
+  echo "before: RUNS=$(pgrep -xc runs || true) SLEEPS=$(pgrep -fc "^sleep $n$" || true)"
+  pkill -KILL -x script
+  sleep 7
+  echo "after: RUNS=$(pgrep -xc runs || true) SLEEPS=$(pgrep -fc "^sleep $n$" || true)"
+  pkill -KILL -x runs 2>/dev/null; pkill -f "^sleep $n$" 2>/dev/null; pkill -f '^sleep 30$' 2>/dev/null
+  rm -rf "$work"
+}
+run_hangup_case

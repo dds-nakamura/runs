@@ -27,7 +27,8 @@
 
 | ファイル | 変更 |
 |---|---|
-| `src/tui.rs` | `ctrlc::set_handler` の登録、ループでのフラグ確認、`TerminationRequested` のエラー |
+| `src/tui.rs` | `ctrlc::set_handler` の登録（フラグ + 緊急時の逃げ道）、ループでのフラグ確認、`bail!("terminated by signal")` |
+| `src/runner.rs` | `LivePids`（生きている pid の共有）。`Runner::live_pids()` |
 | `src/main.rs` | 変更なし（`tui::run` の `Err` を `runs: <メッセージ>` で出して終了コード 1 にする既存の経路） |
 | `Cargo.toml` | `ctrlc` 3.5（feature `termination`）。追加済み |
 
@@ -53,11 +54,17 @@ if terminated.load(Ordering::Acquire) {
 - `ctrlc::set_handler` はプロセスで 1 回しか呼べない（2 回目は `Err(MultipleHandlers)`）。`tui::run` は 1 回しか呼ばれないので問題ない
 - `termination` feature で、Unix は SIGINT / SIGTERM / SIGHUP、Windows は CTRL_C / CTRL_BREAK / CTRL_CLOSE / CTRL_LOGOFF / CTRL_SHUTDOWN がハンドラの対象になる
 - `event::poll(50 ms)` で待っている間にフラグが立っても、次の周回（最長 50 ms 後）で気づく
+- 全停止（最長 3 秒）の間に 2 回目のシグナルが来ても、フラグを立て直すだけで即時終了にはしない（上限があるので待つ）
 
 ### ctrlc の挙動で設計が決まる点（ソースで確認）
 
-- Unix（`ctrlc-3.5.2/src/platform/unix`）: `sigaction` でハンドラを登録し、シグナルが来るとパイプに書く。別スレッドがパイプを読んで利用者のクロージャを呼ぶ。
+- Unix（`ctrlc-3.5.2/src/platform/unix`）: `sigaction` でハンドラを登録し、シグナルが来るとセマフォを上げる。別スレッドがセマフォを待って利用者のクロージャを呼ぶ。
   シグナルの既定動作（プロセスの終了）は置き換わるので、プロセスは続き、主スレッドが片付けてから終わる
+- **端末が本当に閉じたとき（pty のマスターが閉じる。SSH の切断など）は主スレッドが戻ってこない**: crossterm 0.29 の端末の読み取り
+  （`src/event/source/unix/mio.rs`）は EOF / EIO で抜けないため、`event::poll` から戻らず、フラグを見に来られない（レビューで判明。WSL で再現）。
+  そのため、ハンドラのスレッドはフラグを立てた後、主スレッドの片付け完了（`cleaned_up`）を `EMERGENCY_GRACE`（5 秒 = 全停止の上限 3 秒 + 余裕）まで待ち、
+  終わっていなければ `Runner` が共有する生きている pid（`LivePids`）をすべて KILL して `std::process::exit(1)` する。端末はもう無いので復元は問わない。
+  `kill -s HUP` では端末が生きているので通常の経路になる。疑似端末での確認は `script` を SIGKILL して pty のマスターを閉じる
 - Windows（`src/platform/windows/mod.rs`）: `SetConsoleCtrlHandler` のコールバックはセマフォを上げて **すぐ TRUE を返す**。利用者のクロージャは別スレッドが後で呼ぶ。
   Ctrl+Break はコールバックが返ってもプロセスが続くので、主スレッドが片付けられる。
   **タブ・ウィンドウを閉じる操作（CTRL_CLOSE_EVENT）は、コールバックが返った時点で OS がプロセスを終了させる**ので、片付けは間に合わない（懸念点 1）

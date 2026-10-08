@@ -332,9 +332,10 @@ fn grandchild_ignoring_term_is_killed_after_grace() {
         Ok(RunnerEvent::Started { run: 0 }) => {}
         other => panic!("Started のはずが {other:?}"),
     }
-    // 孫（trap を設定した sleep）が起きる前に TERM を送ると、孫ごと止まってしまい何も証明できない
+    // 孫（trap を設定した sleep）が起きる前に TERM を送ると、孫ごと止まってしまい何も証明できない。
+    // `^...$` を付けないと親シェルのコマンドライン（sh -c "... sleep 31 ..."）にも一致して待たずに抜ける
     let deadline = Instant::now() + TIMEOUT;
-    while !process_alive("sleep 31") {
+    while !process_alive("^sleep 31$") {
         assert!(Instant::now() < deadline, "sleep 31 が起きてこない");
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -355,7 +356,7 @@ fn grandchild_ignoring_term_is_killed_after_grace() {
         stopped_at.elapsed()
     );
     assert!(
-        !process_alive("sleep 31"),
+        !process_alive("^sleep 31$"),
         "Exited の時点で sleep 31 が残っている"
     );
 }
@@ -371,11 +372,15 @@ fn stop_all_and_wait_kills_grandchildren() {
         Ok(RunnerEvent::Started { run: 0 }) => {}
         other => panic!("Started のはずが {other:?}"),
     }
-    std::thread::sleep(Duration::from_millis(300));
+    let deadline = Instant::now() + TIMEOUT;
+    while !process_alive("^sleep 32$") {
+        assert!(Instant::now() < deadline, "sleep 32 が起きてこない");
+        std::thread::sleep(Duration::from_millis(50));
+    }
 
     runner.stop_all_and_wait(Duration::from_secs(2));
 
-    assert!(!process_alive("sleep 32"), "sleep 32 が残っている");
+    assert!(!process_alive("^sleep 32$"), "sleep 32 が残っている");
 }
 
 #[cfg(windows)]

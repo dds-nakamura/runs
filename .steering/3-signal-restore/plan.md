@@ -22,6 +22,15 @@ Windows でタブ・ウィンドウを閉じる操作は `ctrlc` の実装上間
   `pty-check.sh` に SIGINT のケースと「実行中のコマンドを止めてから SIGHUP」を足し、停止のケースで `TOOK_MS`（シグナルから終了までの時間）を出すようにした。
   WSL で TERM は 83 ms、HUP は 99 ms（`sleep` は TERM ですぐ終わるので上限 3 秒の手前）
 
+- **reviewer の Important 2 件への対応**
+  1. 端末を本当に閉じたとき（pty のマスターが閉じる）、crossterm の読み取りが戻らず主スレッドがフラグを見に来られない。
+     `runs` が CPU を使いながら残り、子プロセスも止まらない（main より悪化）。reviewer が WSL で再現 → ハンドラのスレッドに逃げ道を作った。
+     フラグを立てた後、主スレッドの片付け完了を `EMERGENCY_GRACE`（5 秒）まで待ち、終わらなければ `LivePids`（`Runner` が共有する生きている pid）を KILL して `process::exit(1)`。
+     `pty-check.sh` に「端末を閉じる」ケース（`script` を SIGKILL）を追加。spec.md の設計に追記
+  2. 孫プロセスのテストの `pgrep -f "sleep 31"` が親シェルのコマンドラインにも一致し、競合が取り除けていなかった → `^sleep 31$` に。`sleep 32` のテストも固定 sleep から待ちループに
+- Nit への対応: spec の `ctrlc` の説明（パイプ → セマフォ）と `TerminationRequested` の記述、2 回目のシグナルの扱いを spec に追記、
+  `pty-check.sh` の `sleep` の秒数を毎回変えて無関係な `sleep` を数えないように、plan.md の変更ファイルと証明を 6 ケース（SIGTERM / SIGHUP / SIGINT / 停止 + TERM / 停止 + HUP / 端末を閉じる）に更新
+
 ## 変更するファイル
 
 - `src/tui.rs`（変更）:
@@ -29,7 +38,7 @@ Windows でタブ・ウィンドウを閉じる操作は `ctrlc` の実装上間
   - `run`: 端末でないときの `bail!` の後、`TerminalGuard::new()` の前で呼ぶ（端末でなければハンドラを登録しない）
   - `event_loop` に `terminated: &AtomicBool` を渡し、各周回の先頭で `if terminated.load(Acquire) { bail!("terminated by signal") }`。
     戻った後は既存の経路（`stop_all_and_wait` → ガードの drop → `main` が `runs: terminated by signal` を stderr へ → 終了コード 1）
-- `.claude/scripts/pty-check.sh`（変更）: ケースを 3 つ追加
+- `.claude/scripts/pty-check.sh`（変更）: ケースを 6 つ追加（当初 3 つ。verifier と reviewer の指摘で SIGINT・停止 + HUP・端末を閉じるを追加）
   - 「SIGTERM で終了」: 疑似端末の中で `"$BIN" < /dev/tty & pid=$!; sleep 2; kill -s TERM "$pid"; wait "$pid"; echo "EXIT=$?"` + モード表示。
     期待: `EXIT=1`、`terminated by signal`、`ESC[?1049l` が 1 回、モードが `isig icanon echo`
     （非対話の bash はバックグラウンドの stdin を `/dev/null` にするので、`< /dev/tty` で端末を渡す）
@@ -65,7 +74,7 @@ Windows でタブ・ウィンドウを閉じる操作は `ctrlc` の実装上間
 ## 証明（Proof）
 
 - `bash .claude/scripts/verify.sh --all` が `VERIFY OK`（Windows。単体 144 件、CLI 9 件は変わらない）。WSL で fmt / clippy / test が通る
-- WSL の `bash .claude/scripts/pty-check.sh`: 新しい 3 ケース（SIGTERM / SIGHUP / 実行中の停止）が上の期待どおり。既存 10 ケースが変わらない
+- WSL の `bash .claude/scripts/pty-check.sh`: 新しい 6 ケース（SIGTERM / SIGHUP / SIGINT / 停止 + TERM / 停止 + HUP / 端末を閉じる）が期待どおり。既存 10 ケースが変わらない
 - Windows Terminal（ユーザー）: `ping -t` 実行中の Ctrl+Break で、ping が残らない・端末が戻る・`runs: terminated by signal` が出る・`$LASTEXITCODE` が 1
 - 未検証として報告: macOS、タブを閉じる操作（範囲外。現状を記録する）、MSRV 1.88、cargo-deny
 
