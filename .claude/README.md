@@ -1,7 +1,7 @@
 # runs の Claude Code ハーネス
 
-`evecloud-sdlc` プラグイン（[The AI-Native SDLC Playbook](https://claude.com/blog/the-ai-native-sdlc-playbook) に基づく開発フロー）を、
-EVECLOUD から独立した Rust ターミナルアプリ向けに作り直したものです。プラグインではなくプロジェクトの `.claude/` に直接置いているため、
+社内の開発フロー用プラグイン（[The AI-Native SDLC Playbook](https://claude.com/blog/the-ai-native-sdlc-playbook) に基づく）を、
+この Rust ターミナルアプリ向けに作り直したものです。プラグインではなくプロジェクトの `.claude/` に直接置いているため、
 `/sdlc-setup` のような導入手順は不要です（clone して Claude Code を起動すれば有効になります）。
 
 各段階の成果物（`intent.md` → `spec.md` → `plan.md` → 差分・テスト → PR・レビュー所見）を `.steering/<作業ディレクトリ>/` にコミットし、次の段階がそれを読みます。
@@ -15,22 +15,22 @@ EVECLOUD から独立した Rust ターミナルアプリ向けに作り直し�
 | Node.js | フックの実行 |
 | Git Bash（Windows） | `verify.sh` の実行 |
 | GitHub CLI（`gh`） | issue の参照・PR 作成（`winget install GitHub.cli` → `gh auth login`） |
-| cargo-deny（任意） | `verify.sh --all` での依存のライセンス・脆弱性確認 |
+| cargo-deny（任意。CI では必須） | `verify.sh --all` での依存のライセンス・脆弱性確認（`cargo install --locked cargo-deny`） |
 
-`evecloud-sdlc`・`evecloud-config` プラグインは `.claude/settings.json` の `enabledPlugins` でこのプロジェクトでは無効にしています（フックの二重実行と EVECLOUD 前提のスキル・警告を避けるため）。
+元のプラグインは `.claude/settings.json` の `enabledPlugins` でこのプロジェクトでは無効にしています（フックの二重実行と、別プロジェクト前提のスキル・警告を避けるため）。
 
-## evecloud-sdlc からの主な変更
+## 元のプラグインからの主な変更
 
-| 項目 | evecloud-sdlc | runs |
+| 項目 | 元のプラグイン | runs |
 |---|---|---|
 | 配布 | プラグイン + `/sdlc-setup` | プロジェクトの `.claude/` に直接配置 |
-| 課題・リモート | Backlog `THEMIS_GO` / Backlog Git 固定 | GitHub Issues / GitHub（`gh` CLI） |
+| 課題・リモート | Backlog / Backlog Git 固定 | GitHub Issues / GitHub（`gh` CLI） |
 | 検証 | gofmt / go vet / go test（ビルドタグ別）/ test-catalog | cargo fmt / clippy `-D warnings` / test（`--all` で `--locked`・doc・deny） |
 | 編集後の整形 | gofmt | rustfmt（Cargo.toml の edition を渡す） |
 | 保護ブランチ | master / release / development | main / master |
 | コマンドガード | go mod tidy・本番 AWS ゲート | `cargo publish` 等の拒否、引数なし `cargo run`（対話 TUI）の確認 |
 | 編集ガード | dist・go.sum・go.mod の replace | `target/`・`Cargo.lock` |
-| 方針スキル | evecloud-security（API・認証・ログ） | rust-safety（panic・端末復元・エスケープ注入・座標・unsafe・依存） |
+| 方針スキル | security（API・認証・ログ） | rust-safety（panic・端末復元・エスケープ注入・座標・unsafe・依存） |
 | E2E | e2e-test（Playwright） | tui-test（状態・描画スナップショット・CLI・PTY 実機確認） |
 | /fix-bug | テストファイルをロック | 同じ。ただしロックのためテストを実装と別ファイル（`src/foo/tests.rs` / `tests/`）に置く |
 
@@ -52,6 +52,7 @@ EVECLOUD から独立した Rust ターミナルアプリ向けに作り直し�
 | パス | 内容 |
 |---|---|
 | `CLAUDE.md`（ルート） | コマンド・開発フロー・検証・規約・Claude がよく間違えること・未確定事項 |
+| `.github/workflows/ci.yml`（ルート） | CI。3 OS の stable で `verify.sh --all`、Linux の Rust 1.88（MSRV）で `cargo check` / `cargo test` |
 | `REVIEW.md`（ルート） | レビュー方針（Bugs / Security / Compliance の 3 パス、Important の定義、Nit 上限） |
 | `settings.json` | permissions・hooks・プラグインの無効化 |
 | `scripts/verify.sh` | 検証コマンド（成功時のみ `VERIFY OK` と `state/verified-at` の更新） |

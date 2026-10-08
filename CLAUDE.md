@@ -5,14 +5,16 @@ TUI から選んで実行し、出力をその場で見て、実行中のもの�
 `gh` などの CLI 経由の PR / CI / 課題の確認、AI エージェントの実行状況、複数リポジトリの状態を後から載せる。
 外部サービスは API を直接呼ばず、既存の CLI（`gh` など）経由で使う。利用者は当面は開発者本人。
 
-EVECLOUD とは独立した単独プロジェクト。EVECLOUD の規約・Backlog `THEMIS_GO`・evecloud-* のスキルやエージェントは適用しない。
-リモート: GitHub `dds-nakamura/runs`（private。課題は GitHub Issues、PR は `gh`）。応答・ドキュメントは日本語。仕様の細部は未確定（末尾の「未確定事項」）。決まったらこのファイルを更新する。
+他のプロジェクトの規約・課題管理・スキル・エージェントは適用しない単独プロジェクト。
+リモート: GitHub `dds-nakamura/runs`（public。課題は GitHub Issues、PR は `gh`）。応答・ドキュメントは日本語。仕様の細部は未確定（末尾の「未確定事項」）。決まったらこのファイルを更新する。
 
 ## Commands
 
 - 検証（これ1つ）: `bash .claude/scripts/verify.sh` → 最終行 `VERIFY OK` で成功
   - 中身: `cargo fmt --check`／`cargo clippy --workspace --all-targets --all-features -- -D warnings`／`cargo test --workspace --all-features`
-  - CI 相当: `bash .claude/scripts/verify.sh --all`（`--locked` 付き + `cargo doc` 警告ゼロ + `cargo deny check`（導入時））
+  - CI 相当: `bash .claude/scripts/verify.sh --all`（`--locked` 付き + `cargo doc` 警告ゼロ + `cargo deny check`）。CI（GitHub Actions）はこれを 3 OS で実行し、CI では cargo-deny が無いと失敗する
+  - CI の結果: PR の Checks または `gh pr checks`。落ちたジョブのログは `gh run view <run-id> --log-failed`。手元での再現は `verify.sh --all`（cargo-deny は `cargo install --locked cargo-deny`）、
+    MSRV は `rustup toolchain install 1.88 && cargo +1.88 test --locked --workspace --all-features`
 - 個別テスト: `cargo test <テスト名>`
 - 実行: **対話 TUI を Bash ツールで起動しない**（TTY が無くハングする）。非対話なら `cargo run -- <引数>`。
   実機確認は PTY を持つ端末で行う（`/tui-test` の「層 4」）
@@ -71,7 +73,8 @@ clippy 警告を `#[allow(...)]` で黙らせる場合は理由コメント必�
 
 ## Conventions
 
-- ブランチ: `<type>/<issue番号>-<slug>`（例: `feat/12-key-bindings`。type: feat / fix / refactor / docs / chore。issue が無ければ `<type>/<slug>`）。main / master へ直接 push しない
+- ブランチ: `<type>/<issue番号>-<slug>`（例: `feat/12-key-bindings`。type: feat / fix / refactor / docs / chore。issue が無ければ `<type>/<slug>`）。main / master へ直接 push しない。
+  main はルールセットで保護し、CI の 4 ジョブ（`verify` × 3 OS、`msrv`）を必須ステータスチェックにしている
 - コミット: `<日本語で何をしたか> (#12)`（issue が無ければ要約のみ。行頭を `#` にしない。1コミット1論点）。
   作業ブランチ上なら区切りのよいところでコミットしてよい。main 上のコミットと push は確認が入る
 - 依存クレートの追加は spec / plan で合意してから（`cargo add` は確認が入る）
@@ -92,9 +95,9 @@ clippy 警告を `#[allow(...)]` で黙らせる場合は理由コメント必�
 
 - [x] 対象 OS・端末 → Windows 11（Windows Terminal）/ Linux / macOS の 3 OS すべてを一次対象とする。conhost は一次対象に含めない
 - [x] Linux の確認手段 → WSL の Ubuntu 24.04（`cargo test` と `pty-check.sh`。`CARGO_TARGET_DIR=$HOME/.cache/runs-target` を指定し、`target/` を Windows と共有しない）
-- [ ] macOS の確認手段（未定）。CI の 3 OS マトリクスは未導入
+- [x] macOS の確認手段 → GitHub Actions の `macos-latest`（`cargo test` のみ。実機・TUI の目視は無し）。CI は 3 OS（stable）+ Linux の MSRV 1.88 + cargo-deny（#13）
 - [x] TUI ライブラリ → ratatui 0.30 + crossterm 0.29（`ratatui::crossterm` 経由）
 - [x] エラー処理クレート → `anyhow` のみで開始。エラーの種類で分岐する必要が出たら `thiserror` の追加を spec で合意する
-- [x] 課題管理とリモート → GitHub `dds-nakamura/runs`（private）
-- [x] edition・MSRV → edition 2024 / MSRV 1.88（`rust-version`。1.88 のツールチェーンでの実ビルドは未検証）
+- [x] 課題管理とリモート → GitHub `dds-nakamura/runs`（public。#13 で公開）
+- [x] edition・MSRV → edition 2024 / MSRV 1.88（`rust-version`。CI の `msrv` ジョブで 1.88 のビルドとテストを確認）
 - [ ] 配布方法（cargo install / バイナリ配布。最初のリリース前に決める。`encoding_rs` の WHATWG データが BSD-3-Clause なので、バイナリを配るときは著作権表示を同梱する）
