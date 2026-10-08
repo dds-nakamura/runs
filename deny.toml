@@ -1,0 +1,29 @@
+# 依存のライセンス・脆弱性・重複・取得元の確認（cargo deny check）。verify.sh --all と CI で実行する。
+# 許可リストを広げるときは spec で合意する（rust-safety 8 章）。
+
+[graph]
+all-features = true
+
+[advisories]
+yanked = "deny"
+ignore = []
+
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-3-Clause",
+  "Unicode-3.0",
+  "Zlib",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+# `foo = "*"` のような版指定を禁止する。path 依存を足すときは allow-wildcard-paths = true を併用する
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
