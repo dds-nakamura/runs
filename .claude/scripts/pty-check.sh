@@ -61,3 +61,11 @@ run_case "stdin が /dev/null（メッセージが出て EXIT=1）" "true" \
   '"$BIN" < /dev/null; echo "EXIT=$?"; '"$MODES"
 run_case "--version をパイプへ（EXIT=0）" "true" \
   '"$BIN" --version | cat; echo "EXIT=${PIPESTATUS[0]}"; '"$MODES"
+
+# --- シグナル（#3）。非対話の bash はバックグラウンドの stdin を /dev/null にするので、< /dev/tty で端末を渡す ---
+SIGNAL_BODY='stty cols 80 rows 24; "$BIN" < /dev/tty & pid=$!; sleep 2; kill -s SIGNAME "$pid"; wait "$pid"; echo "EXIT=$?"; '"$MODES"
+run_case "SIGTERM で終了（EXIT=1、terminated by signal、モードが戻る）" "true" "${SIGNAL_BODY//SIGNAME/TERM}"
+run_case "SIGHUP で終了（EXIT=1、モードが戻る）" "true" "${SIGNAL_BODY//SIGNAME/HUP}"
+# sleep 300 を実行中に SIGTERM → 全停止してから終了。SLEEPS=0 が正しい
+run_case "実行中のコマンドを止めてから SIGTERM で終了（EXIT=1、SLEEPS=0）" "sleep 0.5; printf '\r'" \
+  'work=$(mktemp -d); printf "[[command]]\nname = \"sleeper\"\ncommand = \"sleep 300; echo done\"\n" > "$work/runs.toml"; cd "$work"; stty cols 80 rows 24; "$BIN" < /dev/tty & pid=$!; sleep 3; kill -s TERM "$pid"; wait "$pid"; echo "EXIT=$?"; '"$MODES"'; echo "SLEEPS=$(pgrep -fc "^sleep 300$" || true)"; cd /; rm -rf "$work"' 30

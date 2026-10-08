@@ -2,6 +2,8 @@
 
 use std::io::{self, IsTerminal, Write};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
@@ -71,13 +73,35 @@ pub fn run(app: &mut App, config: &Config) -> Result<()> {
         bail!("stdin and stdout must be a terminal");
     }
 
+    // SIGTERM / SIGHUP（Unix）や Ctrl+Break（Windows）でも、下の経路で全停止と復元が走るようにする
+    let terminated = install_termination_flag()?;
     let (mut runner, rx) = Runner::new(config.shell.clone());
     let mut guard = TerminalGuard::new()?;
-    let result = event_loop(&mut guard.terminal, app, &config.path, &mut runner, &rx);
+    let result = event_loop(
+        &mut guard.terminal,
+        app,
+        &config.path,
+        &mut runner,
+        &rx,
+        &terminated,
+    );
     // 端末を復元する前に子プロセスを片付ける（kill / taskkill の出力は捨てているので画面は崩れない）
     runner.stop_all_and_wait(STOP_GRACE);
     drop(guard);
     result
+}
+
+/// シグナル・コンソールの制御イベントで立つフラグを登録する。
+///
+/// ハンドラは別スレッドで呼ばれるので、フラグを立てる以外は何もしない（端末やプロセスには主スレッドだけが触る）。
+/// `termination` feature により、Unix は SIGINT / SIGTERM / SIGHUP、Windows は Ctrl+C / Ctrl+Break などが対象。
+/// raw mode 中の Ctrl+C はキーとして届くので、ここを通るのは `kill` と Ctrl+Break
+fn install_termination_flag() -> Result<Arc<AtomicBool>> {
+    let flag = Arc::new(AtomicBool::new(false));
+    let handler_flag = Arc::clone(&flag);
+    ctrlc::set_handler(move || handler_flag.store(true, Ordering::Release))
+        .context("failed to install the signal handler")?;
+    Ok(flag)
 }
 
 fn event_loop(
@@ -86,10 +110,15 @@ fn event_loop(
     config_path: &Path,
     runner: &mut Runner,
     rx: &Receiver<RunnerEvent>,
+    terminated: &AtomicBool,
 ) -> Result<()> {
     let mut dirty = true;
     let mut last_draw = Instant::now();
     loop {
+        // シグナルで頼まれた終了。呼び出し側が全停止と復元をしてから、このメッセージを stderr に出す
+        if terminated.load(Ordering::Acquire) {
+            bail!("terminated by signal");
+        }
         // 入力・通知の処理でも現在時刻を使う（開始・終了時刻の記録）ので、描画の有無によらず毎ループ渡す
         let now = Instant::now();
         app.set_now(now);
