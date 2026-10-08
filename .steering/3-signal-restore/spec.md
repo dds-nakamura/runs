@@ -121,7 +121,7 @@ if terminated.load(Ordering::Acquire) {
 2. **ハンドラの登録が失敗した場合**（まれ。OS のエラー）は `tui::run` をエラーで終える。シグナルを捕まえられないまま動くより、起動しない方を選ぶ
 3. **SIGHUP で端末が無くなった後の復元は、stdout への書き込みが失敗する**。失敗は捨てる（既存の `Drop` の方針）
 4. **macOS 向けの推移的依存（`objc2` 系）が `Cargo.lock` に入る**。macOS でのビルドは未検証のまま
-5. **`process::exit` の経路を 1 つ作った**（判断者: ユーザー）。rust-safety 2 章は「`Terminal` が drop されない経路を作らない」としているが、
+5. **`process::exit` の経路を 1 つ作った** → 決定: rust-safety 2 章の例外として認める（2026-10-08 ユーザー）。rust-safety 2 章は「`Terminal` が drop されない経路を作らない」としているが、
    端末が閉じて主スレッドが戻らない場合は他に手段が無い。`exit` の前に復元を試すこと、`EMERGENCY_GRACE` を全停止の上限より十分長くすることで、
    端末が生きている場合の害を抑える
 6. **impact-analyzer は使っていない**。変更は `tui.rs` 1 ファイル
