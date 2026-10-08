@@ -170,7 +170,10 @@ unknown-git = "deny"
 - cargo-deny 0.20.2（手元、2026-10-08）で `deny.toml` は書いたとおりで通った。`Unicode-DFS-2016` / `WTFPL` は `runs` の依存グラフに現れず、許可リストへの追加は不要。古い書式の警告も無し
 - `cargo deny check` の警告は `hashbrown`（2 版）と `syn`（2 版）の重複のみ（`multiple-versions = "warn"` のとおり）。advisories / bans / licenses / sources すべて ok
 - `CI=1` で cargo-deny が無い状態の `verify.sh --all` は `NG: cargo deny（CI では必須…）` → `VERIFY FAILED` になった（手順 3 の確認。cargo-deny のインストール中に実施）
-- `ci.yml` の YAML 文法は手元に pyyaml が無く確認できなかった。push 後の Actions で確認する
+- `ci.yml` の YAML 文法は手元に pyyaml が無く確認できなかった。push 後の Actions で確認した（初回で 4 ジョブとも成功）
+- PR #14 の初回 CI（run 37737000249、2026-10-08）: `verify (ubuntu-latest)` 1m09s / `verify (windows-latest)` 2m33s / `verify (macos-latest)` 52s / `msrv` 1m06s、すべて pass。3 OS のログに `VERIFY OK`・`advisories ok, bans ok, licenses ok, sources ok`・テスト 144 + 9 件。stable は rustc 1.99.0、cargo-deny は 0.20.2（手元と同じ版）。`msrv` は rustc 1.88.0 で check と test が通過（MSRV 1.88 の実ビルドが初めて確認できた）
+- リスク「macOS のテスト失敗」は顕在化しなかった。`kill -s TERM -- -<pid>` / `pgrep -f` を使う孫プロセス停止のテストも macOS で通った。別課題の起票は不要
+- `Cargo.lock` の確認ステップは 4 ジョブとも pass（`--locked` の漏れ無し）
 
 ## 並行可能な作業
 

@@ -194,6 +194,7 @@ PR 1 件につき push 3 回 + マージ後の main で 4 回動くと約 180 �
 推奨: まずこの構成で始め、Settings → Billing で消費を見る。上限に迫るなら、macOS を `push: main` のときだけ動かす（PR では Linux / Windows のみ）か、`workflow_dispatch` の手動実行にする。この切り替えは YAML の `if:` 1 行なので後から変えやすい。
 
 ### C3. macOS で初めてテストが走る。落ちる可能性があるテストがある → **判断済み: 落ちたら別課題**（2026-10-08、ユーザー。下表の a）
+**結果（2026-10-08、PR #14 の初回 CI）: macOS で全テスト（144 + 9 件）が通過し、懸念は顕在化しなかった。別課題の起票は不要。**
 
 棚卸しの評価（推測を含む）:
 - 高め: `src/runner/tests.rs` の `grandchild_ignoring_term_is_killed_after_grace` と `stop_all_and_wait_kills_grandchildren`。`src/runner.rs:417-434` は外部コマンド `kill -s TERM -- -<pid>` でプロセスグループへ送るが、macOS の `/bin/kill` がこの引数形式を受けるかは未確認。`pgrep -f '^sleep 31$'` の一致も未確認
@@ -228,7 +229,7 @@ Actions のバージョン更新と依存の更新は自動化しない。`cargo
 
 ## intent の未解決の問い
 
-- MSRV 1.88 で現在の `Cargo.lock` の依存がビルドできるか → **部分回答**。全 198 依存の `rust-version` 宣言で 1.88 を超えるものは無い（最大 1.88.0: ratatui / encoding_rs / time など）。未宣言のクレートが多いので実ビルドでしか確定しない。CI の `msrv` ジョブで確認する（手元の WSL での事前確認は、CI が最初の 1 回で答えを出すので省く）
+- MSRV 1.88 で現在の `Cargo.lock` の依存がビルドできるか → **部分回答**。全 198 依存の `rust-version` 宣言で 1.88 を超えるものは無い（最大 1.88.0: ratatui / encoding_rs / time など）。未宣言のクレートが多いので実ビルドでしか確定しない。CI の `msrv` ジョブで確認する（手元の WSL での事前確認は、CI が最初の 1 回で答えを出すので省く）→ **確定（2026-10-08）**: PR #14 の `msrv` ジョブが rustc 1.88.0 で `cargo check` と `cargo test`（144 + 9 件）を通過。現在の `Cargo.lock` は MSRV 1.88 でビルドできる
 - cargo-deny のライセンス許可リストに何を入れるか → **回答**。上記「`deny.toml` のポリシー」の表。`WTFPL` と `Unicode-DFS-2016` はグラフに現れた場合だけ
 - MSRV のジョブを Linux だけにするか → **回答**。Linux のみ（C2 の分数と、MSRV の問題は OS によらないため）
 - ブランチ保護を管理者にも適用するか → **問いが無効**。ブランチ保護自体が使えない（C1）
