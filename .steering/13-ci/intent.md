@@ -42,7 +42,8 @@
 - `cargo install` でのツール導入は CI の時間を伸ばすので、キャッシュまたは事前ビルド済みバイナリを使う（手段は spec で決める）
 - 対話 TUI は CI では起動しない（TTY が無い）。`pty-check.sh` は範囲外
 - 外部の Actions（`actions/checkout` など）はメジャーバージョンまたはコミット SHA で固定する
-- EVECLOUD の CI 規約は適用しない（単独プロジェクト）
+- 他プロジェクトの CI 規約は適用しない（単独プロジェクト）
+- （2026-10-08 追記）ブランチ保護は GitHub Free の private リポジトリでは使えないと分かった（spec C1）。リポジトリを **public にする** 前提で進める。公開の操作とルールセットの設定はユーザーが手動で行う。公開前の確認事項（author メール・社内固有名・LICENSE）は spec C5
 
 ## 範囲外
 
@@ -55,4 +56,5 @@
 - [ ] MSRV 1.88 で現在の `Cargo.lock` の依存がビルドできるか（spec の前に手元の WSL で `rustup toolchain install 1.88` して確認できる。できなければ依存の固定か MSRV の引き上げを spec で判断する）
 - [ ] cargo-deny のライセンス許可リストに何を入れるか（MIT / Apache-2.0 / BSD-3-Clause / Unicode-3.0 など。依存ツリーの棚卸しは spec で行う）
 - [ ] MSRV のジョブを Linux だけにするか 3 OS にするか（分数の節約。spec で決める。既定案は Linux のみ）
-- [ ] ブランチ保護を有効にすると、管理者（本人）にも適用するかどうか（GitHub の設定項目。利用者が設定時に決める）
+- [x] ブランチ保護を有効にすると、管理者（本人）にも適用するかどうか → spec の「ブランチ保護の手順」で Bypass list を空（管理者にも適用）とした
+- [x] public 化の前の判断（spec C5）→ 2026-10-08 にユーザーが決定: 今後のコミットだけ noreply メールにする（履歴は書き換えない）、CLAUDE.md の社内固有名は一般的な表現に書き換える、LICENSE は `MIT OR Apache-2.0`、`.steering` の作成者欄はそのまま
