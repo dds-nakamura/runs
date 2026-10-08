@@ -16,3 +16,16 @@ command = "cargo clippy --workspace --all-targets --all-features -- -D warnings"
 [[command]]
 name = "fmt-check"
 command = "cargo fmt --all -- --check"
+
+# 以下は手動確認用（停止・終了コード・シグナルの確認）。ping の -t / -n は Windows の書き方（Linux は `ping 127.0.0.1` / `ping -c 4`）。
+[[command]]
+name = "ping"
+command = "ping -t 127.0.0.1"
+
+[[command]]
+name = "wait3"
+command = "ping -n 4 127.0.0.1"
+
+[[command]]
+name = "hello"
+command = "echo hello"
