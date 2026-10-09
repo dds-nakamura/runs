@@ -9,7 +9,7 @@ use ratatui::layout::Rect;
 use super::*;
 use crate::app::{Action, App, Effect};
 use crate::config::{CommandSpec, Config};
-use crate::runner::{RunId, RunnerEvent};
+use crate::runner::{Capture, GhEvent, RunId, RunnerEvent};
 
 fn config(names: &[&str]) -> Config {
     Config {
@@ -102,10 +102,49 @@ fn row(list: &str, right: &str) -> String {
     format!("{list:<24} {right:<55}")
 }
 
-/// 最下行: 左にキーの案内（はみ出した分は切る）、右端にタイトル。
+/// 最下行: 左にキーの案内（はみ出した分は切る）。タイトルは、案内の右に空白 2 桁を挟んで収まる幅のときだけ右端に出る
 fn help_row(width: usize, title: &str) -> String {
-    let help_width = width - title.len();
-    format!("{HELP:<help_width$.help_width$}{title}")
+    if width >= HELP.len() + 2 + title.len() {
+        let help_width = width - title.len();
+        format!("{HELP:<help_width$}{title}")
+    } else {
+        format!("{HELP:<width$.width$}")
+    }
+}
+
+/// 成功した `gh` 2 回分の結果（取得時刻は 2026-10-08T07:13:56Z）。
+fn fetched(pr_json: &str, run_json: &str) -> GhEvent {
+    let capture = |json: &str| Capture {
+        status: Some(exit_status(0)),
+        stdout: json.as_bytes().to_vec(),
+        ..Capture::default()
+    };
+    GhEvent::Fetched {
+        pr: capture(pr_json),
+        run: capture(run_json),
+        now_unix: 1_791_443_636,
+    }
+}
+
+const TWO_PRS: &str = r#"[
+  {"number": 15, "title": "gh status", "headRefName": "feat/15-gh-status",
+   "statusCheckRollup": [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}]},
+  {"number": 16, "title": "Fix foo", "headRefName": "fix/16-foo",
+   "statusCheckRollup": [{"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": null}]}
+]"#;
+
+const TWO_RUNS: &str = r#"[
+  {"headBranch": "main", "status": "completed", "conclusion": "success", "displayTitle": "CI (#14)", "createdAt": "2026-10-08T07:10:56Z"},
+  {"headBranch": "feat/x", "status": "in_progress", "conclusion": "", "displayTitle": "wip", "createdAt": "2026-10-08T07:13:56Z"}
+]"#;
+
+/// sample_app で `g` を押し、結果を受けてから 12 秒たった状態。
+fn status_app(pr_json: &str, run_json: &str) -> App {
+    let mut app = sample_app();
+    app.apply(Action::FetchGh);
+    app.on_gh_event(fetched(pr_json, run_json));
+    advance(&mut app, 12);
+    app
 }
 
 #[test]
@@ -192,11 +231,31 @@ fn notice_replaces_help_line() {
     for i in 11..=30 {
         expected.push(row("", &format!("line {i}")));
     }
-    expected.push(format!(
-        "{:<70}{}",
-        "reloaded runs.toml (3 commands)", "runs 1.2.3"
-    ));
+    // 80 桁ではタイトルが出ない（HELP 79 桁 + 2 + タイトル 10 桁 > 80。通知のときも同じ判断）
+    expected.push(format!("{:<80}", "reloaded runs.toml (3 commands)"));
     terminal.backend().assert_buffer_lines(expected);
+}
+
+#[test]
+fn help_shows_title_only_when_it_fits() {
+    let mut app = new_app("runs 1.2.3", &["a"]);
+
+    // HELP 79 + 2 + 10 = 91 桁から出る。
+    // 一覧は 2 + 1 + 1 + 8 + 1 + 7 = 20 桁、区切り 1 桁、右の見出しは未実行なので名前だけ
+    assert_eq!(HELP.len(), 79);
+    let wide = render(&mut app, 91, 3);
+    wide.backend().assert_buffer_lines([
+        format!("{:<91}", "> a idle             a"),
+        " ".repeat(91),
+        format!("{HELP}  runs 1.2.3"),
+    ]);
+
+    let narrow = render(&mut app, 90, 3);
+    narrow.backend().assert_buffer_lines([
+        format!("{:<90}", "> a idle             a"),
+        " ".repeat(90),
+        format!("{HELP:<90}"),
+    ]);
 }
 
 #[test]
@@ -225,6 +284,145 @@ fn shows_all_states() {
         "                              ",
         &help_row(30, "t"),
     ]);
+}
+
+#[test]
+fn status_pane_before_fetch() {
+    let mut app = sample_app();
+    app.apply(Action::TogglePane);
+    let terminal = render(&mut app, 80, 24);
+
+    let mut expected = vec![
+        row("  build idle", "gh status  (press g to fetch)"),
+        row("> test  running  12s", ""),
+        row("  serve exit 0   12s ago", ""),
+    ];
+    expected.extend((3..23).map(|_| row("", "")));
+    expected.push(help_row(80, "runs 1.2.3"));
+    terminal.backend().assert_buffer_lines(expected);
+}
+
+#[test]
+fn status_pane_while_fetching() {
+    let mut app = sample_app();
+    app.apply(Action::FetchGh);
+    advance(&mut app, 3);
+    let terminal = render(&mut app, 80, 24);
+
+    let mut expected = vec![
+        row("  build idle", "gh status  fetching... 3s"),
+        row("> test  running  15s", ""),
+        row("  serve exit 0   15s ago", ""),
+    ];
+    expected.extend((3..23).map(|_| row("", "")));
+    expected.push(help_row(80, "runs 1.2.3"));
+    terminal.backend().assert_buffer_lines(expected);
+}
+
+#[test]
+fn status_pane_renders_prs_and_runs_at_80x24() {
+    let mut app = status_app(TWO_PRS, TWO_RUNS);
+    let terminal = render(&mut app, 80, 24);
+
+    // ブランチの列は最長の名前の幅（PR は 17 桁、CI 実行は 6 桁）。CI 実行の経過は取得時点が基準で、その後は進まない
+    let mut expected = vec![
+        row("  build idle", "gh status  fetched 12s ago"),
+        row("> test  running  24s", "Pull requests (open)"),
+        row(
+            "  serve exit 0   24s ago",
+            " #15   feat/15-gh-status ok     gh status",
+        ),
+        row("", " #16   fix/16-foo        run..  Fix foo"),
+        row("", "Recent CI runs"),
+        row("", " main   ok     3m ago  CI (#14)"),
+        row("", " feat/x run..  0s ago  wip"),
+    ];
+    expected.extend((7..23).map(|_| row("", "")));
+    expected.push(help_row(80, "runs 1.2.3"));
+    terminal.backend().assert_buffer_lines(expected);
+}
+
+#[test]
+fn status_pane_shows_error_for_failed_side_and_none_for_empty() {
+    let mut app = sample_app();
+    app.apply(Action::FetchGh);
+    app.on_gh_event(GhEvent::Fetched {
+        pr: Capture {
+            status: Some(exit_status(4)),
+            ..Capture::default()
+        },
+        run: Capture {
+            status: Some(exit_status(0)),
+            stdout: b"[]".to_vec(),
+            ..Capture::default()
+        },
+        now_unix: 0,
+    });
+    let terminal = render(&mut app, 80, 24);
+
+    let mut expected = vec![
+        row("  build idle", "gh status  fetched 0s ago"),
+        row("> test  running  12s", "Pull requests (open)"),
+        row(
+            "  serve exit 0   12s ago",
+            " error: gh is not logged in (run: gh auth login)",
+        ),
+        row("", "Recent CI runs"),
+        row("", " (none)"),
+    ];
+    expected.extend((5..23).map(|_| row("", "")));
+    expected.push(help_row(80, "runs 1.2.3"));
+    terminal.backend().assert_buffer_lines(expected);
+}
+
+#[test]
+fn status_pane_truncates_with_more_line() {
+    let three_prs = r#"[{"number": 1, "title": "one", "headRefName": "a"},
+                       {"number": 2, "title": "two", "headRefName": "b"},
+                       {"number": 3, "title": "three", "headRefName": "c"}]"#;
+    let mut app = status_app(three_prs, TWO_RUNS);
+    // 高さ 8: 一覧 7 行、右は見出し 1 + 本文 6。本文は 1 + 3 + 1 + 2 = 7 行なので最後の 2 行が省かれる
+    let terminal = render(&mut app, 80, 8);
+
+    let expected = vec![
+        row("  build idle", "gh status  fetched 12s ago"),
+        row("> test  running  24s", "Pull requests (open)"),
+        row("  serve exit 0   24s ago", " #1    a none   one"),
+        row("", " #2    b none   two"),
+        row("", " #3    c none   three"),
+        row("", "Recent CI runs"),
+        row("", " ... 2 more"),
+        help_row(80, "runs 1.2.3"),
+    ];
+    terminal.backend().assert_buffer_lines(expected);
+}
+
+#[test]
+fn status_pane_truncates_long_titles_and_branches_by_width() {
+    let long = r#"[{"number": 7, "title": "日本語のタイトルがとても長くて区画の幅に収まらない場合の確認です", "headRefName": "feature/a-very-long-branch-name-here"}]"#;
+    let mut app = status_app(long, "[]");
+    let terminal = render(&mut app, 64, 6);
+
+    // 一覧は 24 桁、右は 39 桁（本文 4 行）。ブランチは上限 20 桁で `~`。前置きが 35 桁なのでタイトルは残り 4 桁:
+    // 全角 1 文字（2 桁）+ `~` で、全角の途中では切らない
+    terminal.backend().assert_buffer_lines([
+        row24("  build idle", "gh status  fetched 12s ago", 64),
+        row24("> test  running  24s", "Pull requests (open)", 64),
+        // `{:<w$}` は文字数で埋めるので、全角を含む行は手で桁を合わせる（右は 38 桁 + 空白 1）
+        format!(
+            "{:<24} {} ",
+            "  serve exit 0   24s ago", " #7    feature/a-very-long~ none   日~"
+        ),
+        row24("", "Recent CI runs", 64),
+        row24("", " (none)", 64),
+        help_row(64, "runs 1.2.3"),
+    ]);
+}
+
+/// 幅 `width` の 1 行: 一覧 24 桁 + 区切り 1 桁 + 右ペイン。
+fn row24(list: &str, right: &str, width: usize) -> String {
+    let right_width = width - 25;
+    format!("{list:<24} {right:<right_width$}")
 }
 
 #[test]
@@ -260,6 +458,13 @@ fn does_not_panic_at_tiny_sizes() {
             panes.output.width <= w && panes.output.height <= h,
             "{w}x{h}"
         );
+        // status 区画（取得前・取得中・結果あり）も同じ
+        app.apply(Action::TogglePane);
+        render(&mut app, w, h);
+        app.apply(Action::FetchGh);
+        render(&mut app, w, h);
+        app.on_gh_event(fetched(TWO_PRS, TWO_RUNS));
+        render(&mut app, w, h);
     }
 }
 

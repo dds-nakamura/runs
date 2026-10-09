@@ -3,6 +3,7 @@
 mod app;
 mod cli;
 mod config;
+mod gh;
 mod output;
 mod runner;
 mod timefmt;

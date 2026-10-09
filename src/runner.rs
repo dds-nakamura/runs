@@ -5,14 +5,16 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
+use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::config::CommandSpec;
+use crate::gh;
 
 /// 実行ごとに一意な番号。`App` が採番し、通知の宛先に使う（コマンドの添字ではないので、一覧が並び替わっても再実行してもずれない）。
 pub type RunId = u64;
@@ -41,6 +43,33 @@ pub enum RunnerEvent {
         message: String,
     },
 }
+
+/// `gh` のような「1 回で終わる外部コマンド」の結果。出力は全部読んでから返す。
+#[derive(Debug, Default)]
+pub struct Capture {
+    /// 終了状態。起動に失敗したか、タイムアウトで止めたときは `None`
+    pub status: Option<ExitStatus>,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    /// 起動の失敗（`NotFound` なら PATH に無い）
+    pub spawn_error: Option<std::io::ErrorKind>,
+    /// 期限までに終わらず、強制終了した
+    pub timed_out: bool,
+}
+
+/// `gh` の取得結果。PR の一覧と CI 実行の一覧を 1 回で返す
+#[derive(Debug)]
+pub enum GhEvent {
+    Fetched {
+        pr: Capture,
+        run: Capture,
+        /// 取得した時点の UNIX 秒（壁時計。CI 実行の経過時間の基準）
+        now_unix: u64,
+    },
+}
+
+/// `gh` 1 回あたりの上限。ネットワーク待ちで戻らないときはここで諦める
+pub const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// 穏やかな停止から強制終了までの猶予（Unix）。
 const STOP_GRACE: Duration = Duration::from_secs(2);
@@ -93,6 +122,10 @@ pub struct Runner {
     shell: Vec<String>,
     running: HashMap<RunId, RunningProcess>,
     live: LivePids,
+    /// 取得中の `gh` のスレッド。終わっていれば次の `fetch_gh` で置き換える
+    gh_fetch: Option<JoinHandle<()>>,
+    /// いま動いている `gh` の pid（スレッドと共有。終了時に止めるため）
+    gh_pid: Arc<Mutex<Option<u32>>>,
 }
 
 impl Runner {
@@ -104,6 +137,8 @@ impl Runner {
                 shell,
                 running: HashMap::new(),
                 live: LivePids::default(),
+                gh_fetch: None,
+                gh_pid: Arc::new(Mutex::new(None)),
             },
             rx,
         )
@@ -166,6 +201,7 @@ impl Runner {
     /// 止められないものがあっても `grace + FORCE_GRACE` ほどで必ず戻る
     pub fn stop_all_and_wait(&mut self, grace: Duration) {
         self.reap();
+        self.kill_gh();
         for process in self.running.values() {
             if terminate(process.pid).is_err() {
                 let _ = lock(&process.child).kill();
@@ -196,6 +232,42 @@ impl Runner {
     /// 次の `start` から使うシェルを差し替える（設定の再読み込み用）。実行中のプロセスには影響しない
     pub fn set_shell(&mut self, shell: Vec<String>) {
         self.shell = shell;
+    }
+
+    /// `gh` で PR と CI 実行の一覧を取る。別スレッドで 2 回順に実行し、両方の結果を 1 つの `GhEvent` で `tx` に送る。
+    /// 取得中なら何もしない（結果は進行中のものが届く）。`program` は通常 `"gh"`（テストでは偽のコマンドに差し替える）。
+    /// シェルは通さず引数を分けて渡す。各コマンドは `FETCH_TIMEOUT` で強制終了する
+    pub fn fetch_gh(&mut self, program: &str, cwd: &Path, tx: Sender<GhEvent>) {
+        if self.is_fetching_gh() {
+            return;
+        }
+        let program = program.to_owned();
+        let cwd = cwd.to_path_buf();
+        let live = self.live.clone();
+        let current = Arc::clone(&self.gh_pid);
+        self.gh_fetch = Some(thread::spawn(move || {
+            let pr = capture(&program, gh::PR_ARGS, &cwd, FETCH_TIMEOUT, &live, &current);
+            let run = capture(&program, gh::RUN_ARGS, &cwd, FETCH_TIMEOUT, &live, &current);
+            // 1970 年より前の時計なら 0（経過時間が全部 0 になるだけ）
+            let now_unix = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            // 受信側が先に終わっていたら伝える先が無いだけ
+            let _ = tx.send(GhEvent::Fetched { pr, run, now_unix });
+        }));
+    }
+
+    /// `gh` の取得が進行中か。
+    pub fn is_fetching_gh(&self) -> bool {
+        self.gh_fetch.as_ref().is_some_and(|h| !h.is_finished())
+    }
+
+    /// 進行中の `gh` を強制終了する（終了時用。結果は届かなくなる）。
+    fn kill_gh(&self) {
+        if let Some(pid) = *lock_pid(&self.gh_pid) {
+            let _ = force_kill(pid);
+        }
     }
 
     #[cfg(test)]
@@ -327,6 +399,7 @@ impl Runner {
 impl Drop for Runner {
     /// panic などで `stop_all_and_wait` を通らずに終わるときも、子プロセスを放置しない（待ちはしない）。
     fn drop(&mut self) {
+        self.kill_gh();
         for process in self.running.values() {
             if !process.is_finished() && terminate(process.pid).is_err() {
                 let _ = lock(&process.child).kill();
@@ -434,6 +507,112 @@ fn force_kill(pid: u32) -> Result<(), String> {
     return run_quietly("kill", &["-s", "KILL", "--", &format!("-{pid}")]);
     #[cfg(windows)]
     return run_quietly("taskkill", &["/T", "/F", "/PID", &pid.to_string()]);
+}
+
+/// 1 回で終わる外部コマンド（`gh`）を実行し、stdout / stderr を全部読んで返す。
+///
+/// シェルは通さず引数を分けて渡す。stdin は null（認証や確認で端末入力を待たせない）。色・ページャー・対話・更新通知は
+/// 環境変数で抑える。`timeout` までに終わらなければ強制終了し `timed_out` にする。pid は `live` と `current` に登録し、
+/// 終了時の全停止と緊急 KILL の対象にする
+fn capture(
+    program: &str,
+    args: &[&str],
+    cwd: &Path,
+    timeout: Duration,
+    live: &LivePids,
+    current: &Mutex<Option<u32>>,
+) -> Capture {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("NO_COLOR", "1")
+        .env("GH_PAGER", "")
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1");
+    #[cfg(unix)]
+    {
+        // 既存のコマンドと同じ停止経路（プロセスグループへの kill）を使えるようにする
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            return Capture {
+                spawn_error: Some(err.kind()),
+                ..Capture::default()
+            };
+        }
+    };
+    let pid = child.id();
+    live.insert(pid);
+    *lock_pid(current) = Some(pid);
+
+    // stdout と stderr は別スレッドで同時に読む（片方だけ読むとパイプが詰まって止まる）
+    let stdout = child.stdout.take().map(read_to_end_in_thread);
+    let stderr = child.stderr.take().map(read_to_end_in_thread);
+
+    let deadline = Instant::now() + timeout;
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() >= deadline => {
+                timed_out = true;
+                // 木ごと止め、最終手段で直接の子も止める。終了を回収して zombie にしない
+                let _ = force_kill(pid);
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Ok(None) => thread::sleep(POLL_INTERVAL),
+            Err(_) => break None,
+        }
+    };
+    *lock_pid(current) = None;
+    live.remove(pid);
+    Capture {
+        status,
+        stdout: collect_output(stdout),
+        stderr: collect_output(stderr),
+        spawn_error: None,
+        timed_out,
+    }
+}
+
+fn read_to_end_in_thread(mut stream: impl Read + Send + 'static) -> JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        // 読み取りの失敗（強制終了でパイプが壊れたなど）は、そこまでの出力で返す
+        let _ = stream.read_to_end(&mut buf);
+        buf
+    })
+}
+
+/// 読み取りスレッドの結果を回収する。プロセスは終わっているのでパイプはすぐ閉じるはずだが、
+/// 孫がパイプを握っていても `READER_GRACE` を過ぎたら諦める（出力は空になる）
+fn collect_output(reader: Option<JoinHandle<Vec<u8>>>) -> Vec<u8> {
+    let Some(reader) = reader else {
+        return Vec::new();
+    };
+    let deadline = Instant::now() + READER_GRACE;
+    while Instant::now() < deadline && !reader.is_finished() {
+        thread::sleep(POLL_INTERVAL);
+    }
+    if reader.is_finished() {
+        reader.join().unwrap_or_default()
+    } else {
+        Vec::new()
+    }
+}
+
+/// poison でも中身（pid）はそのまま使える。
+fn lock_pid(current: &Mutex<Option<u32>>) -> MutexGuard<'_, Option<u32>> {
+    current.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// 外部コマンドを、出力を捨てて実行する（TUI 実行中に端末へ流さない）。

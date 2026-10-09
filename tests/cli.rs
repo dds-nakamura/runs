@@ -48,6 +48,26 @@ fn stderr(output: &Output) -> String {
 }
 
 #[test]
+fn help_mentions_keys() {
+    let output = runs(&["--help"]);
+
+    assert_eq!(output.status.code(), Some(0));
+    let text = stdout(&output);
+    assert!(text.contains("Keys:"), "{text}");
+    for key in [
+        "Enter",
+        "s ",
+        "r ",
+        "g ",
+        "Tab",
+        "PgUp/PgDn/End",
+        "q, Ctrl+C",
+    ] {
+        assert!(text.contains(key), "{key:?} が無い:\n{text}");
+    }
+}
+
+#[test]
 fn version_prints_to_stdout() {
     let output = runs(&["--version"]);
 

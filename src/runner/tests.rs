@@ -429,3 +429,102 @@ fn set_shell_applies_to_next_start() {
     assert_eq!(exit_code(&events), Some(0));
     assert_eq!(output_lines(&events), ["hello"]);
 }
+
+// --- capture / fetch_gh（gh の代わりに OS のシェルを直接起動する） --------------------------
+
+/// `capture` はシェルを通さないので、program に既定のシェル、args にその引数と本文を渡して偽の `gh` にする。
+/// 終わった後に pid の登録が残っていないことも確かめる
+fn capture_shell(script: &str, timeout: Duration) -> Capture {
+    let shell = default_shell();
+    let mut args: Vec<&str> = shell.iter().skip(1).map(String::as_str).collect();
+    args.push(script);
+    let live = LivePids::default();
+    let current = Mutex::new(None);
+    let result = capture(&shell[0], &args, &cwd(), timeout, &live, &current);
+    assert!(live.lock().is_empty(), "pid の登録が残っている");
+    assert_eq!(*lock_pid(&current), None);
+    result
+}
+
+#[test]
+fn capture_collects_stdout_stderr_and_status() {
+    let result = capture_shell("echo [1,2] && echo oops 1>&2 && exit 3", TIMEOUT);
+
+    assert_eq!(result.spawn_error, None);
+    assert!(!result.timed_out);
+    assert_eq!(result.status.and_then(|s| s.code()), Some(3));
+    assert_eq!(String::from_utf8_lossy(&result.stdout).trim(), "[1,2]");
+    assert_eq!(String::from_utf8_lossy(&result.stderr).trim(), "oops");
+}
+
+#[test]
+fn capture_reports_not_found() {
+    let live = LivePids::default();
+    let current = Mutex::new(None);
+
+    let result = capture(
+        "runs-test-no-such-program-xyz",
+        &[],
+        &cwd(),
+        TIMEOUT,
+        &live,
+        &current,
+    );
+
+    assert_eq!(result.spawn_error, Some(std::io::ErrorKind::NotFound));
+    assert!(result.status.is_none());
+    assert!(!result.timed_out);
+    assert!(live.lock().is_empty());
+}
+
+#[test]
+fn capture_times_out_and_kills() {
+    let (program, spec) = long_running();
+    let mut args: Vec<&str> = program.iter().skip(1).map(String::as_str).collect();
+    args.push(&spec.command);
+    let live = LivePids::default();
+    let current = Mutex::new(None);
+    let started = Instant::now();
+
+    let result = capture(
+        &program[0],
+        &args,
+        &cwd(),
+        Duration::from_secs(1),
+        &live,
+        &current,
+    );
+
+    assert!(result.timed_out);
+    assert!(result.status.is_none());
+    assert!(result.spawn_error.is_none());
+    // 期限（1 秒）+ 停止と読み取りの猶予で戻る。30 秒待ってはいない
+    assert!(
+        started.elapsed() < Duration::from_secs(8),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(live.lock().is_empty(), "pid の登録が残っている");
+    assert_eq!(*lock_pid(&current), None);
+}
+
+#[test]
+fn fetch_gh_sends_one_event_for_both_commands() {
+    let (mut runner, _rx) = Runner::new(default_shell());
+    let (tx, rx) = mpsc::channel();
+
+    runner.fetch_gh("runs-test-no-such-program-xyz", &cwd(), tx);
+    let event = rx.recv_timeout(TIMEOUT).expect("Fetched が届く");
+
+    let GhEvent::Fetched { pr, run, now_unix } = event;
+    assert_eq!(pr.spawn_error, Some(std::io::ErrorKind::NotFound));
+    assert_eq!(run.spawn_error, Some(std::io::ErrorKind::NotFound));
+    // 壁時計の UNIX 秒（2023 年より後）
+    assert!(now_unix > 1_700_000_000, "{now_unix}");
+    // スレッドは送信の直後に終わる
+    let deadline = Instant::now() + TIMEOUT;
+    while Instant::now() < deadline && runner.is_fetching_gh() {
+        thread::sleep(POLL_INTERVAL);
+    }
+    assert!(!runner.is_fetching_gh());
+}
