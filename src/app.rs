@@ -153,14 +153,27 @@ pub enum RightPane {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GhPanel {
     NotFetched,
+    /// 取得中。再取得なら前回の結果（`last`）を見せたまま待つ
     Fetching {
         since: Instant,
+        last: Option<GhStatus>,
     },
     /// 最後に取得した結果と、取得した時刻
     Ready {
         status: GhStatus,
         at: Instant,
     },
+}
+
+impl GhPanel {
+    /// 画面に出す結果（取得中なら前回のもの）。
+    pub fn status(&self) -> Option<&GhStatus> {
+        match self {
+            Self::NotFetched => None,
+            Self::Fetching { last, .. } => last.as_ref(),
+            Self::Ready { status, .. } => Some(status),
+        }
+    }
 }
 
 pub struct App {
@@ -301,7 +314,15 @@ impl App {
                     self.set_notice("already fetching");
                     return Vec::new();
                 }
-                self.gh = GhPanel::Fetching { since: self.now };
+                // 再取得の間も前回の結果を見せる
+                let last = match &self.gh {
+                    GhPanel::Ready { status, .. } => Some(status.clone()),
+                    _ => None,
+                };
+                self.gh = GhPanel::Fetching {
+                    since: self.now,
+                    last,
+                };
                 return vec![Effect::FetchGh];
             }
             Action::TogglePane => {

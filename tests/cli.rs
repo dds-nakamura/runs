@@ -53,17 +53,29 @@ fn help_mentions_keys() {
 
     assert_eq!(output.status.code(), Some(0));
     let text = stdout(&output);
-    assert!(text.contains("Keys:"), "{text}");
+    // Keys: の節（次の空行まで）の各行がキー名で始まること。本文の他の文と誤って一致しないよう節に絞る
+    let keys: Vec<&str> = text
+        .lines()
+        .skip_while(|line| line.trim() != "Keys:")
+        .skip(1)
+        .take_while(|line| !line.trim().is_empty())
+        .map(str::trim_start)
+        .collect();
+    assert!(!keys.is_empty(), "Keys: の節が無い:\n{text}");
     for key in [
-        "Enter",
+        "Up/Down, j/k ",
+        "Enter ",
         "s ",
         "r ",
         "g ",
-        "Tab",
-        "PgUp/PgDn/End",
-        "q, Ctrl+C",
+        "Tab ",
+        "PgUp/PgDn/End ",
+        "q, Ctrl+C ",
     ] {
-        assert!(text.contains(key), "{key:?} が無い:\n{text}");
+        assert!(
+            keys.iter().any(|line| line.starts_with(key)),
+            "{key:?} が無い:\n{text}"
+        );
     }
 }
 

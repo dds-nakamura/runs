@@ -887,7 +887,33 @@ fn g_starts_fetch_and_shows_status_pane() {
 
     assert_eq!(effects, [Effect::FetchGh]);
     assert_eq!(app.pane(), RightPane::Status);
-    assert_eq!(*app.gh_panel(), GhPanel::Fetching { since: app.now() });
+    assert_eq!(
+        *app.gh_panel(),
+        GhPanel::Fetching {
+            since: app.now(),
+            last: None,
+        }
+    );
+    assert_eq!(app.gh_panel().status(), None);
+}
+
+#[test]
+fn refetch_keeps_last_result_while_fetching() {
+    let mut app = app();
+    app.apply(Action::FetchGh);
+    app.on_gh_event(fetched(
+        r#"[{"number": 15, "title": "t", "headRefName": "b"}]"#,
+        "[]",
+    ));
+    let before = app.gh_panel().status().cloned();
+
+    assert_eq!(app.apply(Action::FetchGh), [Effect::FetchGh]);
+
+    assert!(matches!(
+        app.gh_panel(),
+        GhPanel::Fetching { last: Some(_), .. }
+    ));
+    assert_eq!(app.gh_panel().status().cloned(), before);
 }
 
 #[test]

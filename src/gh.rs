@@ -72,7 +72,7 @@ pub enum RunResult {
 pub enum GhError {
     /// PATH に `gh` が無い
     NotFound,
-    /// 終了コード 4、または stderr が `gh auth login` を促している
+    /// 終了コード 4、または stderr が `gh auth login` を促している（未ログインのほか、トークンの失効も含む）
     NotLoggedIn,
     NotARepository,
     TimedOut,
@@ -123,6 +123,11 @@ pub fn classify(capture: &Capture) -> Result<&[u8], GhError> {
     if let Some(kind) = capture.spawn_error {
         return Err(match kind {
             std::io::ErrorKind::NotFound => GhError::NotFound,
+            // runner が起動前に確かめる（runs.toml のあるディレクトリが消えた）
+            std::io::ErrorKind::NotADirectory => GhError::Failed {
+                code: None,
+                message: "working directory does not exist".to_owned(),
+            },
             other => GhError::Failed {
                 code: None,
                 message: format!("failed to start gh: {other}"),
@@ -319,22 +324,32 @@ pub fn parse_iso8601_utc(text: &str) -> Option<u64> {
         time_parts.next()??,
         time_parts.next()??,
     );
-    if !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
+    // 外部入力なので範囲を絞る（年に上限が無いと日数の計算があふれる。存在しない日付も通さない）
+    if !(1970..=9999).contains(&year)
+        || !(1..=12).contains(&month)
+        || !(1..=days_in_month(year, month)).contains(&day)
         || !(0..24).contains(&hour)
         || !(0..60).contains(&minute)
         || !(0..60).contains(&second)
     {
         return None;
     }
-    let days = days_from_civil(year, month, day);
-    let seconds = days
-        .checked_mul(86_400)?
-        .checked_add(hour * 3_600 + minute * 60 + second)?;
+    let seconds = days_from_civil(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second;
     u64::try_from(seconds).ok()
 }
 
-/// 1970-01-01 からの日数（グレゴリオ暦。Howard Hinnant の days_from_civil）。
+fn days_in_month(year: i64, month: i64) -> i64 {
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+/// 1970-01-01 からの日数（グレゴリオ暦。Howard Hinnant の days_from_civil）。年は 1970〜9999 に絞ってから呼ぶ
 fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let year = if month <= 2 { year - 1 } else { year };
     let era = year.div_euclid(400);

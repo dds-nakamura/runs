@@ -438,12 +438,31 @@ fn capture_shell(script: &str, timeout: Duration) -> Capture {
     let shell = default_shell();
     let mut args: Vec<&str> = shell.iter().skip(1).map(String::as_str).collect();
     args.push(script);
-    let live = LivePids::default();
-    let current = Mutex::new(None);
-    let result = capture(&shell[0], &args, &cwd(), timeout, &live, &current);
-    assert!(live.lock().is_empty(), "pid の登録が残っている");
-    assert_eq!(*lock_pid(&current), None);
+    let gh = handles();
+    let result = capture(&shell[0], &args, &cwd(), timeout, &gh);
+    assert_no_pid_left(&gh);
     result
+}
+
+fn handles() -> GhHandles {
+    GhHandles {
+        live: LivePids::default(),
+        current: Arc::new(Mutex::new(None)),
+        cancel: Arc::new(AtomicBool::new(false)),
+    }
+}
+
+fn assert_no_pid_left(gh: &GhHandles) {
+    assert!(gh.live.lock().is_empty(), "pid の登録が残っている");
+    assert_eq!(*lock_pid(&gh.current), None);
+}
+
+/// 終わらないコマンドを `capture` に渡す形（program と args）。
+fn long_running_args() -> (String, Vec<String>) {
+    let (program, spec) = long_running();
+    let mut args: Vec<String> = program[1..].to_vec();
+    args.push(spec.command);
+    (program[0].clone(), args)
 }
 
 #[test]
@@ -459,41 +478,36 @@ fn capture_collects_stdout_stderr_and_status() {
 
 #[test]
 fn capture_reports_not_found() {
-    let live = LivePids::default();
-    let current = Mutex::new(None);
+    let gh = handles();
 
-    let result = capture(
-        "runs-test-no-such-program-xyz",
-        &[],
-        &cwd(),
-        TIMEOUT,
-        &live,
-        &current,
-    );
+    let result = capture("runs-test-no-such-program-xyz", &[], &cwd(), TIMEOUT, &gh);
 
     assert_eq!(result.spawn_error, Some(std::io::ErrorKind::NotFound));
     assert!(result.status.is_none());
     assert!(!result.timed_out);
-    assert!(live.lock().is_empty());
+    assert_no_pid_left(&gh);
+}
+
+#[test]
+fn capture_reports_missing_working_directory_before_spawning() {
+    let gh = handles();
+    let missing = cwd().join("runs-test-no-such-dir-xyz");
+
+    let result = capture("runs-test-no-such-program-xyz", &[], &missing, TIMEOUT, &gh);
+
+    // gh が無いのではなく、作業ディレクトリが無い
+    assert_eq!(result.spawn_error, Some(std::io::ErrorKind::NotADirectory));
+    assert_no_pid_left(&gh);
 }
 
 #[test]
 fn capture_times_out_and_kills() {
-    let (program, spec) = long_running();
-    let mut args: Vec<&str> = program.iter().skip(1).map(String::as_str).collect();
-    args.push(&spec.command);
-    let live = LivePids::default();
-    let current = Mutex::new(None);
+    let (program, args) = long_running_args();
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let gh = handles();
     let started = Instant::now();
 
-    let result = capture(
-        &program[0],
-        &args,
-        &cwd(),
-        Duration::from_secs(1),
-        &live,
-        &current,
-    );
+    let result = capture(&program, &args, &cwd(), Duration::from_secs(1), &gh);
 
     assert!(result.timed_out);
     assert!(result.status.is_none());
@@ -504,8 +518,50 @@ fn capture_times_out_and_kills() {
         "{:?}",
         started.elapsed()
     );
-    assert!(live.lock().is_empty(), "pid の登録が残っている");
-    assert_eq!(*lock_pid(&current), None);
+    assert_no_pid_left(&gh);
+}
+
+#[test]
+fn cancel_gh_kills_running_capture() {
+    let (program, args) = long_running_args();
+    let gh = handles();
+    let worker = {
+        let gh = gh.clone();
+        thread::spawn(move || {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            capture(&program, &args, &cwd(), TIMEOUT, &gh)
+        })
+    };
+    // 起動して pid が登録されるまで待つ
+    let deadline = Instant::now() + TIMEOUT;
+    while Instant::now() < deadline && lock_pid(&gh.current).is_none() {
+        thread::sleep(POLL_INTERVAL);
+    }
+    assert!(lock_pid(&gh.current).is_some(), "起動しなかった");
+    let started = Instant::now();
+
+    cancel_gh(&gh.current, &gh.cancel);
+
+    let result = worker.join().expect("capture は panic しない");
+    // 30 秒の sleep / ping を待たずに戻る
+    assert!(
+        started.elapsed() < Duration::from_secs(8),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(!result.timed_out);
+    assert!(gh.cancel.load(Ordering::Acquire));
+    assert_no_pid_left(&gh);
+}
+
+#[test]
+fn fetch_sequence_skips_remaining_commands_when_cancelled() {
+    let gh = handles();
+    // 1 本目が終わる前に取り消されたのと同じ状態
+    gh.cancel.store(true, Ordering::Release);
+
+    assert!(fetch_sequence("runs-test-no-such-program-xyz", &cwd(), &gh).is_none());
+    assert_no_pid_left(&gh);
 }
 
 #[test]

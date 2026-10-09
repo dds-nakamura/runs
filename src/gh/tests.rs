@@ -299,6 +299,41 @@ fn classify_not_a_git_repository() {
 }
 
 #[test]
+fn classify_missing_working_directory() {
+    let capture = Capture {
+        spawn_error: Some(std::io::ErrorKind::NotADirectory),
+        ..Capture::default()
+    };
+    assert_eq!(
+        classify(&capture).unwrap_err().to_string(),
+        "gh failed: working directory does not exist"
+    );
+}
+
+#[test]
+fn iso8601_rejects_impossible_dates_and_years_out_of_range() {
+    for text in [
+        "2026-02-30T00:00:00Z",
+        "2023-02-29T00:00:00Z",
+        "2026-04-31T00:00:00Z",
+        "10000-01-01T00:00:00Z",
+        "99999999999999999-01-01T00:00:00Z",
+        "1969-01-01T00:00:00Z",
+    ] {
+        assert_eq!(parse_iso8601_utc(text), None, "{text:?}");
+    }
+    // うるう年の 2 月 29 日と、各月の末日は通る
+    assert_eq!(
+        parse_iso8601_utc("2024-02-29T00:00:00Z"),
+        Some(1_709_164_800)
+    );
+    assert_eq!(
+        parse_iso8601_utc("9999-12-31T23:59:59Z"),
+        Some(253_402_300_799)
+    );
+}
+
+#[test]
 fn classify_timed_out() {
     let capture = Capture {
         timed_out: true,

@@ -122,10 +122,12 @@ pub struct Runner {
     shell: Vec<String>,
     running: HashMap<RunId, RunningProcess>,
     live: LivePids,
-    /// 取得中の `gh` のスレッド。終わっていれば次の `fetch_gh` で置き換える
-    gh_fetch: Option<JoinHandle<()>>,
+    /// `gh` の取得が進行中。取得スレッドが結果を送る直前に下ろす（`Ready` を見た時点で次の取得を受け付ける）
+    gh_busy: Arc<AtomicBool>,
     /// いま動いている `gh` の pid（スレッドと共有。終了時に止めるため）
     gh_pid: Arc<Mutex<Option<u32>>>,
+    /// 取得の取り消し（終了時）。立っていれば取得スレッドは残りのコマンドを起動せず、結果も送らない
+    gh_cancel: Arc<AtomicBool>,
 }
 
 impl Runner {
@@ -137,8 +139,9 @@ impl Runner {
                 shell,
                 running: HashMap::new(),
                 live: LivePids::default(),
-                gh_fetch: None,
+                gh_busy: Arc::new(AtomicBool::new(false)),
                 gh_pid: Arc::new(Mutex::new(None)),
+                gh_cancel: Arc::new(AtomicBool::new(false)),
             },
             rx,
         )
@@ -241,33 +244,40 @@ impl Runner {
         if self.is_fetching_gh() {
             return;
         }
+        self.gh_busy.store(true, Ordering::Release);
+        self.gh_cancel.store(false, Ordering::Release);
         let program = program.to_owned();
         let cwd = cwd.to_path_buf();
-        let live = self.live.clone();
-        let current = Arc::clone(&self.gh_pid);
-        self.gh_fetch = Some(thread::spawn(move || {
-            let pr = capture(&program, gh::PR_ARGS, &cwd, FETCH_TIMEOUT, &live, &current);
-            let run = capture(&program, gh::RUN_ARGS, &cwd, FETCH_TIMEOUT, &live, &current);
-            // 1970 年より前の時計なら 0（経過時間が全部 0 になるだけ）
-            let now_unix = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            // 受信側が先に終わっていたら伝える先が無いだけ
-            let _ = tx.send(GhEvent::Fetched { pr, run, now_unix });
-        }));
+        let gh = GhHandles {
+            live: self.live.clone(),
+            current: Arc::clone(&self.gh_pid),
+            cancel: Arc::clone(&self.gh_cancel),
+        };
+        let busy = Arc::clone(&self.gh_busy);
+        thread::spawn(move || {
+            let result = fetch_sequence(&program, &cwd, &gh);
+            // 送る前に下ろす。受信側が Ready を見た時点で、次の g が新しい取得を起こせる
+            busy.store(false, Ordering::Release);
+            if let Some((pr, run)) = result {
+                // 1970 年より前の時計なら 0（経過時間が全部 0 になるだけ）
+                let now_unix = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                // 受信側が先に終わっていたら伝える先が無いだけ
+                let _ = tx.send(GhEvent::Fetched { pr, run, now_unix });
+            }
+        });
     }
 
     /// `gh` の取得が進行中か。
     pub fn is_fetching_gh(&self) -> bool {
-        self.gh_fetch.as_ref().is_some_and(|h| !h.is_finished())
+        self.gh_busy.load(Ordering::Acquire)
     }
 
-    /// 進行中の `gh` を強制終了する（終了時用。結果は届かなくなる）。
+    /// 進行中の `gh` の取得を取り消す（終了時用）。動いているコマンドは強制終了し、残りのコマンドは起動されず、結果も届かない
     fn kill_gh(&self) {
-        if let Some(pid) = *lock_pid(&self.gh_pid) {
-            let _ = force_kill(pid);
-        }
+        cancel_gh(&self.gh_pid, &self.gh_cancel);
     }
 
     #[cfg(test)]
@@ -509,19 +519,53 @@ fn force_kill(pid: u32) -> Result<(), String> {
     return run_quietly("taskkill", &["/T", "/F", "/PID", &pid.to_string()]);
 }
 
+/// `gh` の取得スレッドと `Runner` が共有するもの。
+#[derive(Clone)]
+struct GhHandles {
+    live: LivePids,
+    /// いま動いている `gh` の pid
+    current: Arc<Mutex<Option<u32>>>,
+    /// 取り消しの旗。`current` と同じロックの下で立てる（起動の直後と行き違わない）
+    cancel: Arc<AtomicBool>,
+}
+
+/// `gh` を 2 回（PR の一覧、CI 実行の一覧）順に実行する。途中で取り消されたら残りは起動せず `None`
+fn fetch_sequence(program: &str, cwd: &Path, gh: &GhHandles) -> Option<(Capture, Capture)> {
+    let pr = capture(program, gh::PR_ARGS, cwd, FETCH_TIMEOUT, gh);
+    if gh.cancel.load(Ordering::Acquire) {
+        return None;
+    }
+    let run = capture(program, gh::RUN_ARGS, cwd, FETCH_TIMEOUT, gh);
+    if gh.cancel.load(Ordering::Acquire) {
+        return None;
+    }
+    Some((pr, run))
+}
+
+/// 取り消しの旗を立て、動いている `gh` があれば強制終了する。
+/// 旗と pid は同じロックの下で扱うので、`capture` が起動した直後に登録する前に取りこぼすことは無い
+fn cancel_gh(current: &Mutex<Option<u32>>, cancel: &AtomicBool) {
+    let pid = lock_pid(current);
+    cancel.store(true, Ordering::Release);
+    if let Some(pid) = *pid {
+        let _ = force_kill(pid);
+    }
+}
+
 /// 1 回で終わる外部コマンド（`gh`）を実行し、stdout / stderr を全部読んで返す。
 ///
 /// シェルは通さず引数を分けて渡す。stdin は null（認証や確認で端末入力を待たせない）。色・ページャー・対話・更新通知は
-/// 環境変数で抑える。`timeout` までに終わらなければ強制終了し `timed_out` にする。pid は `live` と `current` に登録し、
-/// 終了時の全停止と緊急 KILL の対象にする
-fn capture(
-    program: &str,
-    args: &[&str],
-    cwd: &Path,
-    timeout: Duration,
-    live: &LivePids,
-    current: &Mutex<Option<u32>>,
-) -> Capture {
+/// 環境変数で抑える（利用者の `CLICOLOR_FORCE` / `GH_FORCE_TTY` は `NO_COLOR` より優先されて JSON に色が付くので外す）。
+/// `timeout` までに終わらなければ強制終了し `timed_out` にする。pid は `live` と `current` に登録し、
+/// 終了時の全停止と緊急 KILL の対象にする。取り消し済みなら起動しない
+fn capture(program: &str, args: &[&str], cwd: &Path, timeout: Duration, gh: &GhHandles) -> Capture {
+    if !cwd.is_dir() {
+        // Unix では子の chdir が失敗して NotFound になり「gh が無い」と区別できないので、先に確かめる
+        return Capture {
+            spawn_error: Some(std::io::ErrorKind::NotADirectory),
+            ..Capture::default()
+        };
+    }
     let mut command = Command::new(program);
     command
         .args(args)
@@ -530,6 +574,8 @@ fn capture(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("NO_COLOR", "1")
+        .env_remove("CLICOLOR_FORCE")
+        .env_remove("GH_FORCE_TTY")
         .env("GH_PAGER", "")
         .env("GH_PROMPT_DISABLED", "1")
         .env("GH_NO_UPDATE_NOTIFIER", "1");
@@ -539,18 +585,26 @@ fn capture(
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(err) => {
-            return Capture {
-                spawn_error: Some(err.kind()),
-                ..Capture::default()
-            };
+    // 起動と pid の登録はロックの下で行い、取り消しと行き違わないようにする
+    let mut child = {
+        let mut current = lock_pid(&gh.current);
+        if gh.cancel.load(Ordering::Acquire) {
+            return Capture::default();
         }
+        let child = match command.spawn() {
+            Ok(child) => child,
+            Err(err) => {
+                return Capture {
+                    spawn_error: Some(err.kind()),
+                    ..Capture::default()
+                };
+            }
+        };
+        gh.live.insert(child.id());
+        *current = Some(child.id());
+        child
     };
     let pid = child.id();
-    live.insert(pid);
-    *lock_pid(current) = Some(pid);
 
     // stdout と stderr は別スレッドで同時に読む（片方だけ読むとパイプが詰まって止まる）
     let stdout = child.stdout.take().map(read_to_end_in_thread);
@@ -561,20 +615,19 @@ fn capture(
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
-            Ok(None) if Instant::now() >= deadline => {
-                timed_out = true;
-                // 木ごと止め、最終手段で直接の子も止める。終了を回収して zombie にしない
+            Ok(None) if Instant::now() < deadline => thread::sleep(POLL_INTERVAL),
+            // 期限切れか、wait の失敗（まず起きない）。木ごと止め、最終手段で直接の子も止める。終了を回収して zombie にしない
+            result => {
+                timed_out = result.is_ok();
                 let _ = force_kill(pid);
                 let _ = child.kill();
                 let _ = child.wait();
                 break None;
             }
-            Ok(None) => thread::sleep(POLL_INTERVAL),
-            Err(_) => break None,
         }
     };
-    *lock_pid(current) = None;
-    live.remove(pid);
+    *lock_pid(&gh.current) = None;
+    gh.live.remove(pid);
     Capture {
         status,
         stdout: collect_output(stdout),

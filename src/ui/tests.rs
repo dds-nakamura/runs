@@ -330,12 +330,12 @@ fn status_pane_renders_prs_and_runs_at_80x24() {
         row("> test  running  24s", "Pull requests (open)"),
         row(
             "  serve exit 0   24s ago",
-            " #15   feat/15-gh-status ok     gh status",
+            " #15    feat/15-gh-status ok        gh status",
         ),
-        row("", " #16   fix/16-foo        run..  Fix foo"),
+        row("", " #16    fix/16-foo        run..     Fix foo"),
         row("", "Recent CI runs"),
-        row("", " main   ok     3m ago  CI (#14)"),
-        row("", " feat/x run..  0s ago  wip"),
+        row("", " main   ok        3m ago  CI (#14)"),
+        row("", " feat/x run..     0s ago  wip"),
     ];
     expected.extend((7..23).map(|_| row("", "")));
     expected.push(help_row(80, "runs 1.2.3"));
@@ -387,9 +387,9 @@ fn status_pane_truncates_with_more_line() {
     let expected = vec![
         row("  build idle", "gh status  fetched 12s ago"),
         row("> test  running  24s", "Pull requests (open)"),
-        row("  serve exit 0   24s ago", " #1    a none   one"),
-        row("", " #2    b none   two"),
-        row("", " #3    c none   three"),
+        row("  serve exit 0   24s ago", " #1     a none      one"),
+        row("", " #2     b none      two"),
+        row("", " #3     c none      three"),
         row("", "Recent CI runs"),
         row("", " ... 2 more"),
         help_row(80, "runs 1.2.3"),
@@ -401,22 +401,47 @@ fn status_pane_truncates_with_more_line() {
 fn status_pane_truncates_long_titles_and_branches_by_width() {
     let long = r#"[{"number": 7, "title": "日本語のタイトルがとても長くて区画の幅に収まらない場合の確認です", "headRefName": "feature/a-very-long-branch-name-here"}]"#;
     let mut app = status_app(long, "[]");
-    let terminal = render(&mut app, 64, 6);
+    let terminal = render(&mut app, 68, 6);
 
-    // 一覧は 24 桁、右は 39 桁（本文 4 行）。ブランチは上限 20 桁で `~`。前置きが 35 桁なのでタイトルは残り 4 桁:
+    // 一覧は 24 桁、右は 43 桁（本文 4 行）。ブランチは上限 20 桁で `~`。前置きが 39 桁なのでタイトルは残り 4 桁:
     // 全角 1 文字（2 桁）+ `~` で、全角の途中では切らない
     terminal.backend().assert_buffer_lines([
-        row24("  build idle", "gh status  fetched 12s ago", 64),
-        row24("> test  running  24s", "Pull requests (open)", 64),
-        // `{:<w$}` は文字数で埋めるので、全角を含む行は手で桁を合わせる（右は 38 桁 + 空白 1）
+        row24("  build idle", "gh status  fetched 12s ago", 68),
+        row24("> test  running  24s", "Pull requests (open)", 68),
+        // `{:<w$}` は文字数で埋めるので、全角を含む行は手で桁を合わせる（右は 42 桁 + 空白 1）
         format!(
             "{:<24} {} ",
-            "  serve exit 0   24s ago", " #7    feature/a-very-long~ none   日~"
+            "  serve exit 0   24s ago", " #7     feature/a-very-long~ none      日~"
         ),
-        row24("", "Recent CI runs", 64),
-        row24("", " (none)", 64),
-        help_row(64, "runs 1.2.3"),
+        row24("", "Recent CI runs", 68),
+        row24("", " (none)", 68),
+        help_row(68, "runs 1.2.3"),
     ]);
+}
+
+#[test]
+fn status_pane_keeps_last_result_while_refetching() {
+    let mut app = status_app(TWO_PRS, TWO_RUNS);
+    app.apply(Action::FetchGh);
+    advance(&mut app, 2);
+    let terminal = render(&mut app, 80, 24);
+
+    // 見出しだけ fetching... になり、本文は前回の結果のまま
+    let mut expected = vec![
+        row("  build idle", "gh status  fetching... 2s"),
+        row("> test  running  26s", "Pull requests (open)"),
+        row(
+            "  serve exit 0   26s ago",
+            " #15    feat/15-gh-status ok        gh status",
+        ),
+        row("", " #16    fix/16-foo        run..     Fix foo"),
+        row("", "Recent CI runs"),
+        row("", " main   ok        3m ago  CI (#14)"),
+        row("", " feat/x run..     0s ago  wip"),
+    ];
+    expected.extend((7..23).map(|_| row("", "")));
+    expected.push(help_row(80, "runs 1.2.3"));
+    terminal.backend().assert_buffer_lines(expected);
 }
 
 /// 幅 `width` の 1 行: 一覧 24 桁 + 区切り 1 桁 + 右ペイン。

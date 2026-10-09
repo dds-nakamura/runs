@@ -15,8 +15,8 @@ const HELP: &str =
     "Up/Dn move  Enter run  s stop  r reload  g gh  Tab pane  PgUp/Dn scroll  q quit";
 /// status 区画のブランチ名の列の最大幅。
 const BRANCH_MAX_WIDTH: usize = 20;
-/// status 区画の結果の列の幅（`run..` / `FAIL`）。
-const RESULT_WIDTH: usize = 6;
+/// status 区画の結果の列の幅（`run..` / `FAIL` / `cancelled`）。
+const RESULT_WIDTH: usize = 9;
 /// 状態の表記の最大幅（`exit 255`）。
 const STATUS_WIDTH: usize = 8;
 /// 選択中の印の幅（`> `）。
@@ -167,7 +167,7 @@ fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
 fn draw_status_header(frame: &mut Frame, area: Rect, app: &App) {
     let text = match app.gh_panel() {
         GhPanel::NotFetched => "gh status  (press g to fetch)".to_owned(),
-        GhPanel::Fetching { since } => format!(
+        GhPanel::Fetching { since, .. } => format!(
             "gh status  fetching... {}",
             timefmt::format_elapsed(app.now().saturating_duration_since(*since))
         ),
@@ -185,7 +185,8 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
     if height == 0 {
         return;
     }
-    let GhPanel::Ready { status, .. } = app.gh_panel() else {
+    // 取得中でも前回の結果があればそれを出す（見出しだけ fetching... になる）
+    let Some(status) = app.gh_panel().status() else {
         return;
     };
     let mut lines = status_lines(status, usize::from(area.width));
@@ -220,11 +221,11 @@ fn status_lines(status: &GhStatus, width: usize) -> Vec<String> {
     lines
 }
 
-/// ` #15   feat/15-gh-status ok     タイトル`。タイトルは残りの幅に収まるよう切る
+/// ` #15    feat/15-gh-status ok        タイトル`。番号は 5 桁まで列が揃う。タイトルは残りの幅に収まるよう切る
 fn pr_line(pr: &PrSummary, branch_width: usize, width: usize) -> String {
     let branch = pad_to_width(&truncate_to_width(&pr.branch, branch_width), branch_width);
     let prefix = format!(
-        " #{:<4} {branch} {:<RESULT_WIDTH$} ",
+        " #{:<5} {branch} {:<RESULT_WIDTH$} ",
         pr.number,
         check_label(pr.checks)
     );
