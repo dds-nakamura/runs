@@ -4,7 +4,7 @@ use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -14,8 +14,17 @@ use ratatui::layout::Rect;
 
 use crate::app::{self, App, Effect};
 use crate::config::{self, Config};
-use crate::runner::{LivePids, Runner, RunnerEvent};
+use crate::runner::{GhEvent, LivePids, Runner, RunnerEvent};
 use crate::ui;
+
+/// `Effect` を実行するのに要るもの。プロセスは `runner`、設定ファイルは `config_path`、`gh` は `root`（設定ファイルのある
+/// ディレクトリ）で実行して `gh_tx` に結果を送る
+struct EffectContext<'a> {
+    runner: &'a mut Runner,
+    config_path: &'a Path,
+    root: &'a Path,
+    gh_tx: Sender<GhEvent>,
+}
 
 /// 入力を待つ間隔。この間隔で子プロセスの通知も取り込む
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -82,14 +91,26 @@ pub fn run(app: &mut App, config: &Config) -> Result<()> {
     let (mut runner, rx) = Runner::new(config.shell.clone());
     // SIGTERM / SIGHUP（Unix）や Ctrl+Break（Windows）でも、下の経路で全停止と復元が走るようにする
     let cleaned_up = Arc::new(AtomicBool::new(false));
-    let terminated = install_termination_flag(runner.live_pids(), Arc::clone(&cleaned_up))?;
+    let terminated = install_termination_flag(
+        runner.live_pids(),
+        runner.gh_cancel_flag(),
+        Arc::clone(&cleaned_up),
+    )?;
     let mut guard = TerminalGuard::new()?;
+    // gh の取得結果は子プロセスの通知とは別のチャネルで受ける（RunId に紐づかないため）
+    let (gh_tx, gh_rx) = mpsc::channel::<GhEvent>();
+    let mut context = EffectContext {
+        runner: &mut runner,
+        config_path: &config.path,
+        root: &config.root,
+        gh_tx,
+    };
     let result = event_loop(
         &mut guard.terminal,
         app,
-        &config.path,
-        &mut runner,
+        &mut context,
         &rx,
+        &gh_rx,
         &terminated,
     );
     // 端末を復元する前に子プロセスを片付ける（kill / taskkill の出力は捨てているので画面は崩れない）
@@ -112,6 +133,7 @@ pub fn run(app: &mut App, config: &Config) -> Result<()> {
 /// 端末が消えていれば復元の書き込みは失敗するだけで、生きていれば raw mode・alternate screen・カーソルが戻る）
 fn install_termination_flag(
     live: LivePids,
+    gh_cancel: Arc<AtomicBool>,
     cleaned_up: Arc<AtomicBool>,
 ) -> Result<Arc<AtomicBool>> {
     let flag = Arc::new(AtomicBool::new(false));
@@ -125,6 +147,8 @@ fn install_termination_flag(
             }
             std::thread::sleep(Duration::from_millis(100));
         }
+        // gh の取得は、動いているものを KILL するだけでは取得スレッドが次のコマンドを起こすので、先に取り消しの旗を立てる
+        gh_cancel.store(true, Ordering::Release);
         live.kill_all();
         // 主スレッドが止まっているので、こちらで復元を試す。失敗は捨てる（端末が無いときは書けない）。
         // 主スレッドが stdout のロックを持ったまま書き込みで止まっている場合もあるので、別スレッドで試し、
@@ -147,9 +171,9 @@ fn install_termination_flag(
 fn event_loop(
     terminal: &mut DefaultTerminal,
     app: &mut App,
-    config_path: &Path,
-    runner: &mut Runner,
+    context: &mut EffectContext<'_>,
     rx: &Receiver<RunnerEvent>,
+    gh_rx: &Receiver<GhEvent>,
     terminated: &AtomicBool,
 ) -> Result<()> {
     let mut dirty = true;
@@ -188,7 +212,7 @@ fn event_loop(
                 // 開始時刻の記録に使うので、poll で待った分だけ古くなった時刻を取り直す
                 app.set_now(Instant::now());
                 let effects = app.apply(action);
-                handle_effects(effects, app, runner, config_path);
+                handle_effects(effects, app, context);
             }
             dirty = true;
         }
@@ -197,7 +221,11 @@ fn event_loop(
         app.set_now(Instant::now());
         while let Ok(event) = rx.try_recv() {
             let effects = app.on_runner_event(event);
-            handle_effects(effects, app, runner, config_path);
+            handle_effects(effects, app, context);
+            dirty = true;
+        }
+        while let Ok(event) = gh_rx.try_recv() {
+            app.on_gh_event(event);
             dirty = true;
         }
 
@@ -208,17 +236,22 @@ fn event_loop(
 }
 
 /// `App` が頼んだことを実行する。プロセスは `runner`、ファイルは `config` に任せる
-fn handle_effects(effects: Vec<Effect>, app: &mut App, runner: &mut Runner, config_path: &Path) {
+fn handle_effects(effects: Vec<Effect>, app: &mut App, context: &mut EffectContext<'_>) {
     for effect in effects {
         match effect {
-            Effect::Start { run, spec } => runner.start(run, &spec),
-            Effect::Stop(run) => runner.stop(run),
-            Effect::Reload => match config::load_file(config_path) {
+            Effect::Start { run, spec } => context.runner.start(run, &spec),
+            Effect::Stop(run) => context.runner.stop(run),
+            Effect::FetchGh => {
+                context
+                    .runner
+                    .fetch_gh("gh", context.root, context.gh_tx.clone());
+            }
+            Effect::Reload => match config::load_file(context.config_path) {
                 Ok(new) => {
-                    runner.set_shell(new.shell.clone());
+                    context.runner.set_shell(new.shell.clone());
                     // 消えた実行中のコマンドの Stop が返る
                     let stops = app.replace_config(&new);
-                    handle_effects(stops, app, runner, config_path);
+                    handle_effects(stops, app, context);
                     let count = new.commands.len();
                     let noun = if count == 1 { "command" } else { "commands" };
                     app.set_notice(format!("reloaded {} ({count} {noun})", config::FILE_NAME));

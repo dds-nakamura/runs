@@ -9,8 +9,9 @@ use encoding_rs::Encoding;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 
 use crate::config::{CommandSpec, Config};
+use crate::gh::{self, GhStatus};
 use crate::output::{self, OutputBuffer};
-use crate::runner::{RunId, RunnerEvent};
+use crate::runner::{GhEvent, RunId, RunnerEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandState {
@@ -122,14 +123,57 @@ pub enum Action {
     PageDown,
     ScrollToEnd,
     Reload,
+    /// `gh` で PR と CI の状態を取り、右側を status 区画にする
+    FetchGh,
+    /// 右側の区画を output ↔ status で切り替える（取得はしない）
+    TogglePane,
 }
 
 /// `App` が `tui` に頼むこと。`App` 自身はプロセスにもファイルにも触らない。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
-    Start { run: RunId, spec: CommandSpec },
+    Start {
+        run: RunId,
+        spec: CommandSpec,
+    },
     Stop(RunId),
     Reload,
+    /// `gh` を実行する。実行先のディレクトリは `tui` が設定ファイルの場所から決める
+    FetchGh,
+}
+
+/// 右側の区画に出すもの。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RightPane {
+    Output,
+    Status,
+}
+
+/// `gh` の取得の状態。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GhPanel {
+    NotFetched,
+    /// 取得中。再取得なら前回の結果（`last`）を見せたまま待つ
+    Fetching {
+        since: Instant,
+        last: Option<GhStatus>,
+    },
+    /// 最後に取得した結果と、取得した時刻
+    Ready {
+        status: GhStatus,
+        at: Instant,
+    },
+}
+
+impl GhPanel {
+    /// 画面に出す結果（取得中なら前回のもの）。
+    pub fn status(&self) -> Option<&GhStatus> {
+        match self {
+            Self::NotFetched => None,
+            Self::Fetching { last, .. } => last.as_ref(),
+            Self::Ready { status, .. } => Some(status),
+        }
+    }
 }
 
 pub struct App {
@@ -146,6 +190,10 @@ pub struct App {
     next_run: RunId,
     /// 最下行に出す通知。次の `Action` で消える
     notice: Option<String>,
+    /// 右側の区画に出すもの
+    pane: RightPane,
+    /// `gh` の取得の状態
+    gh: GhPanel,
 }
 
 /// キーバインドはここだけに書く。
@@ -176,6 +224,8 @@ pub fn action_for(event: &Event) -> Option<Action> {
         KeyCode::PageUp => Some(Action::PageUp),
         KeyCode::PageDown => Some(Action::PageDown),
         KeyCode::End => Some(Action::ScrollToEnd),
+        KeyCode::Char('g') => Some(Action::FetchGh),
+        KeyCode::Tab => Some(Action::TogglePane),
         _ => None,
     }
 }
@@ -196,6 +246,8 @@ impl App {
             now,
             next_run: 1,
             notice: None,
+            pane: RightPane::Output,
+            gh: GhPanel::NotFetched,
         }
     }
 
@@ -255,8 +307,49 @@ impl App {
                 }
             }
             Action::ScrollToEnd => self.scroll = Scroll::Follow,
+            Action::FetchGh => {
+                self.pane = RightPane::Status;
+                if matches!(self.gh, GhPanel::Fetching { .. }) {
+                    // 二重に起動しない。進行中の結果が届く
+                    self.set_notice("already fetching");
+                    return Vec::new();
+                }
+                // 再取得の間も前回の結果を見せる
+                let last = match &self.gh {
+                    GhPanel::Ready { status, .. } => Some(status.clone()),
+                    _ => None,
+                };
+                self.gh = GhPanel::Fetching {
+                    since: self.now,
+                    last,
+                };
+                return vec![Effect::FetchGh];
+            }
+            Action::TogglePane => {
+                self.pane = match self.pane {
+                    RightPane::Output => RightPane::Status,
+                    RightPane::Status => RightPane::Output,
+                };
+            }
         }
         Vec::new()
+    }
+
+    /// `gh` の取得結果を取り込む。経過時間の基準は取得側が付けた壁時計（`now_unix`）で、表示の「何秒前」は `set_now` の時刻
+    pub fn on_gh_event(&mut self, event: GhEvent) {
+        let GhEvent::Fetched { pr, run, now_unix } = event;
+        self.gh = GhPanel::Ready {
+            status: gh::status_from(&pr, &run, now_unix),
+            at: self.now,
+        };
+    }
+
+    pub fn pane(&self) -> RightPane {
+        self.pane
+    }
+
+    pub fn gh_panel(&self) -> &GhPanel {
+        &self.gh
     }
 
     pub fn on_runner_event(&mut self, event: RunnerEvent) -> Vec<Effect> {
@@ -376,11 +469,13 @@ impl App {
         self.notice = None;
     }
 
-    /// 時間の表示があるか（実行中、または一度でも終わったコマンドがある）。あれば毎秒描き直す
+    /// 時間の表示があるか（実行中、または一度でも終わったコマンドがある。status 区画を見ていて取得の経過が出ている）。
+    /// あれば毎秒描き直す
     pub fn needs_tick(&self) -> bool {
         self.commands
             .iter()
             .any(|c| c.state == CommandState::Running || c.finished_at.is_some())
+            || (self.pane == RightPane::Status && self.gh != GhPanel::NotFetched)
     }
 
     pub fn set_output_height(&mut self, height: u16) {

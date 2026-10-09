@@ -58,6 +58,16 @@ pub fn help_text() -> String {
            -h, --help     Print help\n  \
            -V, --version  Print version\n\
          \n\
+         Keys:\n  \
+           Up/Down, j/k   select a command\n  \
+           Enter          run (stop and run again if running)\n  \
+           s              stop\n  \
+           r              reload {file}\n  \
+           g              fetch open PRs and recent CI runs with gh\n  \
+           Tab            switch the right pane (output / gh status)\n  \
+           PgUp/PgDn/End  scroll the output\n  \
+           q, Ctrl+C      quit\n\
+         \n\
          Commands are read from {file} in the current directory or a parent:\n\
          \n\
          {example}\n\

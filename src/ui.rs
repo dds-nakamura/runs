@@ -5,11 +5,18 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Text};
 use ratatui::widgets::Paragraph;
 
-use crate::app::{App, CommandState, CommandView};
+use crate::app::{App, CommandState, CommandView, GhPanel, RightPane};
+use crate::gh::{CheckSummary, GhStatus, PrSummary, RunResult, RunSummary};
 use crate::timefmt;
 
+/// 最下行のキーの案内。79 桁（80 桁の端末に収まる。タイトルはさらに幅があるときだけ右端に出す）。
+/// 全部のキーは載せない（`End` など）。一覧は `--help` の Keys に書く
 const HELP: &str =
-    "Up/Down select  Enter run/restart  s stop  r reload  PgUp/PgDn/End scroll  q quit";
+    "Up/Dn move  Enter run  s stop  r reload  g gh  Tab pane  PgUp/Dn scroll  q quit";
+/// status 区画のブランチ名の列の最大幅。
+const BRANCH_MAX_WIDTH: usize = 20;
+/// status 区画の結果の列の幅（`run..` / `FAIL` / `cancelled`）。
+const RESULT_WIDTH: usize = 9;
 /// 状態の表記の最大幅（`exit 255`）。
 const STATUS_WIDTH: usize = 8;
 /// 選択中の印の幅（`> `）。
@@ -60,8 +67,16 @@ pub fn layout(area: Rect, app: &App) -> Panes {
 pub fn draw(frame: &mut Frame, app: &App) {
     let panes = layout(frame.area(), app);
     draw_list(frame, panes.list, app);
-    draw_header(frame, panes.header, app);
-    draw_output(frame, panes.output, app);
+    match app.pane() {
+        RightPane::Output => {
+            draw_header(frame, panes.header, app);
+            draw_output(frame, panes.output, app);
+        }
+        RightPane::Status => {
+            draw_status_header(frame, panes.header, app);
+            draw_status(frame, panes.output, app);
+        }
+    }
     draw_help(frame, panes.help, app);
 }
 
@@ -132,13 +147,133 @@ fn draw_output(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
-    let title = Line::raw(app.title());
-    let title_width = u16::try_from(title.width()).unwrap_or(u16::MAX);
-    let [left, title_area] =
-        Layout::horizontal([Constraint::Fill(1), Constraint::Length(title_width)]).areas(area);
     // 通知があればキーの案内の代わりに出す（次の操作で消える）
-    frame.render_widget(Line::raw(app.notice().unwrap_or(HELP)), left);
-    frame.render_widget(title, title_area);
+    let text = Line::raw(app.notice().unwrap_or(HELP));
+    let title = Line::raw(app.title());
+    // タイトルは、キーの案内の右に空白 2 桁を挟んで収まるときだけ出す（通知の有無で出たり消えたりしないよう、HELP の幅で判断）
+    let needed = Line::raw(HELP).width() + 2 + title.width();
+    if usize::from(area.width) >= needed {
+        let title_width = u16::try_from(title.width()).unwrap_or(u16::MAX);
+        let [left, title_area] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(title_width)]).areas(area);
+        frame.render_widget(text, left);
+        frame.render_widget(title, title_area);
+    } else {
+        frame.render_widget(text, area);
+    }
+}
+
+/// status 区画の見出し: 取得の状態と、取得からの経過。
+fn draw_status_header(frame: &mut Frame, area: Rect, app: &App) {
+    let text = match app.gh_panel() {
+        GhPanel::NotFetched => "gh status  (press g to fetch)".to_owned(),
+        GhPanel::Fetching { since, .. } => format!(
+            "gh status  fetching... {}",
+            timefmt::format_elapsed(app.now().saturating_duration_since(*since))
+        ),
+        GhPanel::Ready { at, .. } => format!(
+            "gh status  fetched {}",
+            timefmt::format_ago(app.now().saturating_duration_since(*at))
+        ),
+    };
+    frame.render_widget(Line::raw(text), area);
+}
+
+/// status 区画の本文: open な PR と最近の CI 実行。収まらない行は最後の 1 行を `... N more` にして省く
+fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
+    let height = usize::from(area.height);
+    if height == 0 {
+        return;
+    }
+    // 取得中でも前回の結果があればそれを出す（見出しだけ fetching... になる）
+    let Some(status) = app.gh_panel().status() else {
+        return;
+    };
+    let mut lines = status_lines(status, usize::from(area.width));
+    if lines.len() > height {
+        let hidden = lines.len() - (height - 1);
+        lines.truncate(height - 1);
+        lines.push(format!(" ... {hidden} more"));
+    }
+    let lines: Vec<Line> = lines.into_iter().map(Line::raw).collect();
+    frame.render_widget(Paragraph::new(Text::from(lines)), area);
+}
+
+fn status_lines(status: &GhStatus, width: usize) -> Vec<String> {
+    let mut lines = vec!["Pull requests (open)".to_owned()];
+    match &status.prs {
+        Ok(prs) if prs.is_empty() => lines.push(" (none)".to_owned()),
+        Ok(prs) => {
+            let branch_width = branch_column_width(prs.iter().map(|pr| pr.branch.as_str()));
+            lines.extend(prs.iter().map(|pr| pr_line(pr, branch_width, width)));
+        }
+        Err(err) => lines.push(format!(" error: {err}")),
+    }
+    lines.push("Recent CI runs".to_owned());
+    match &status.runs {
+        Ok(runs) if runs.is_empty() => lines.push(" (none)".to_owned()),
+        Ok(runs) => {
+            let branch_width = branch_column_width(runs.iter().map(|run| run.branch.as_str()));
+            lines.extend(runs.iter().map(|run| run_line(run, branch_width, width)));
+        }
+        Err(err) => lines.push(format!(" error: {err}")),
+    }
+    lines
+}
+
+/// ` #15    feat/15-gh-status ok        タイトル`。番号は 5 桁まで列が揃う。タイトルは残りの幅に収まるよう切る
+fn pr_line(pr: &PrSummary, branch_width: usize, width: usize) -> String {
+    let branch = pad_to_width(&truncate_to_width(&pr.branch, branch_width), branch_width);
+    let prefix = format!(
+        " #{:<5} {branch} {:<RESULT_WIDTH$} ",
+        pr.number,
+        check_label(pr.checks)
+    );
+    with_title(prefix, &pr.title, width)
+}
+
+/// ` main   ok     3m ago  タイトル`。
+fn run_line(run: &RunSummary, branch_width: usize, width: usize) -> String {
+    let branch = pad_to_width(&truncate_to_width(&run.branch, branch_width), branch_width);
+    let prefix = format!(
+        " {branch} {:<RESULT_WIDTH$} {:<time_width$} ",
+        truncate_to_width(result_label(&run.result), RESULT_WIDTH),
+        timefmt::format_ago(run.age),
+        time_width = timefmt::WIDTH,
+    );
+    with_title(prefix, &run.title, width)
+}
+
+fn with_title(prefix: String, title: &str, width: usize) -> String {
+    let remaining = width.saturating_sub(Line::raw(prefix.as_str()).width());
+    format!("{prefix}{}", truncate_to_width(title, remaining))
+}
+
+/// ブランチ名の列の幅: 最長のブランチ名、ただし上限あり。
+fn branch_column_width<'a>(branches: impl Iterator<Item = &'a str>) -> usize {
+    branches
+        .map(|b| Line::raw(b).width())
+        .max()
+        .unwrap_or(0)
+        .min(BRANCH_MAX_WIDTH)
+}
+
+fn check_label(checks: CheckSummary) -> &'static str {
+    match checks {
+        CheckSummary::Ok => "ok",
+        CheckSummary::Failed => "FAIL",
+        CheckSummary::Running => "run..",
+        CheckSummary::None => "none",
+    }
+}
+
+fn result_label(result: &RunResult) -> &str {
+    match result {
+        RunResult::Ok => "ok",
+        RunResult::Failed => "FAIL",
+        RunResult::Running => "run..",
+        RunResult::Other(other) => other,
+    }
 }
 
 /// 表示幅が `width` に収まるまで末尾の文字を落とす（全角の途中で切らない）。切ったときは末尾を `~` にして、

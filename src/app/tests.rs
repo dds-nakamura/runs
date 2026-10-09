@@ -6,7 +6,8 @@ use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModif
 
 use super::*;
 use crate::config::{CommandSpec, Config};
-use crate::runner::RunnerEvent;
+use crate::gh::GhError;
+use crate::runner::{Capture, GhEvent, RunnerEvent};
 
 fn press(code: KeyCode, modifiers: KeyModifiers) -> Event {
     Event::Key(KeyEvent::new(code, modifiers))
@@ -858,4 +859,158 @@ fn scroll_position_follows_dropped_lines() {
 
     assert_eq!(app.scroll(), Scroll::At(first - 2));
     assert_eq!(selected_lines(&app)[app.visible_range()].to_vec(), visible);
+}
+
+// --- gh の状態表示 ------------------------------------------------------------------
+
+/// 成功した `gh` 2 回分の結果。
+fn fetched(pr_json: &str, run_json: &str) -> GhEvent {
+    let capture = |json: &str| Capture {
+        status: Some(exit_status(0)),
+        stdout: json.as_bytes().to_vec(),
+        ..Capture::default()
+    };
+    GhEvent::Fetched {
+        pr: capture(pr_json),
+        run: capture(run_json),
+        now_unix: 1_791_443_636,
+    }
+}
+
+#[test]
+fn g_starts_fetch_and_shows_status_pane() {
+    let mut app = app();
+    assert_eq!(app.pane(), RightPane::Output);
+    assert_eq!(*app.gh_panel(), GhPanel::NotFetched);
+
+    let effects = feed(&mut app, &press(KeyCode::Char('g'), KeyModifiers::NONE));
+
+    assert_eq!(effects, [Effect::FetchGh]);
+    assert_eq!(app.pane(), RightPane::Status);
+    assert_eq!(
+        *app.gh_panel(),
+        GhPanel::Fetching {
+            since: app.now(),
+            last: None,
+        }
+    );
+    assert_eq!(app.gh_panel().status(), None);
+}
+
+#[test]
+fn refetch_keeps_last_result_while_fetching() {
+    let mut app = app();
+    app.apply(Action::FetchGh);
+    app.on_gh_event(fetched(
+        r#"[{"number": 15, "title": "t", "headRefName": "b"}]"#,
+        "[]",
+    ));
+    let before = app.gh_panel().status().cloned();
+
+    assert_eq!(app.apply(Action::FetchGh), [Effect::FetchGh]);
+
+    assert!(matches!(
+        app.gh_panel(),
+        GhPanel::Fetching { last: Some(_), .. }
+    ));
+    assert_eq!(app.gh_panel().status().cloned(), before);
+}
+
+#[test]
+fn g_while_fetching_sets_notice_without_effect() {
+    let mut app = app();
+    app.apply(Action::FetchGh);
+    app.apply(Action::TogglePane);
+
+    assert!(app.apply(Action::FetchGh).is_empty());
+    assert_eq!(app.notice(), Some("already fetching"));
+    assert!(matches!(app.gh_panel(), GhPanel::Fetching { .. }));
+    // 取得中でも status 区画には切り替わる
+    assert_eq!(app.pane(), RightPane::Status);
+}
+
+#[test]
+fn tab_toggles_pane_without_fetching() {
+    let mut app = app();
+
+    assert!(feed(&mut app, &press(KeyCode::Tab, KeyModifiers::NONE)).is_empty());
+    assert_eq!(app.pane(), RightPane::Status);
+    assert_eq!(*app.gh_panel(), GhPanel::NotFetched);
+
+    feed(&mut app, &press(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(app.pane(), RightPane::Output);
+}
+
+#[test]
+fn gh_event_makes_panel_ready_and_allows_refetch() {
+    let mut app = app();
+    app.apply(Action::FetchGh);
+    app.set_now(app.now() + Duration::from_secs(3));
+
+    app.on_gh_event(fetched(
+        r#"[{"number": 15, "title": "t", "headRefName": "b"}]"#,
+        "[]",
+    ));
+
+    match app.gh_panel() {
+        GhPanel::Ready { status, at } => {
+            assert_eq!(*at, app.now());
+            assert_eq!(status.prs.as_ref().map(Vec::len), Ok(1));
+            assert_eq!(status.runs, Ok(Vec::new()));
+        }
+        other => panic!("Ready のはずが {other:?}"),
+    }
+    // 取得後の g は再取得
+    assert_eq!(app.apply(Action::FetchGh), [Effect::FetchGh]);
+}
+
+#[test]
+fn gh_event_keeps_failed_side_as_error() {
+    let mut app = app();
+    app.apply(Action::FetchGh);
+    let not_found = || Capture {
+        spawn_error: Some(std::io::ErrorKind::NotFound),
+        ..Capture::default()
+    };
+
+    app.on_gh_event(GhEvent::Fetched {
+        pr: not_found(),
+        run: not_found(),
+        now_unix: 0,
+    });
+
+    let GhPanel::Ready { status, .. } = app.gh_panel() else {
+        panic!("Ready のはず");
+    };
+    assert_eq!(status.prs, Err(GhError::NotFound));
+    assert_eq!(status.runs, Err(GhError::NotFound));
+}
+
+#[test]
+fn needs_tick_only_while_status_pane_shows_fetch_state() {
+    let mut app = app();
+    assert!(!app.needs_tick());
+    // 取得前の status 区画には時間の表示が無い
+    app.apply(Action::TogglePane);
+    assert!(!app.needs_tick());
+    app.apply(Action::FetchGh);
+    assert!(app.needs_tick());
+    // output に戻せば従来どおり
+    app.apply(Action::TogglePane);
+    assert!(!app.needs_tick());
+    app.apply(Action::TogglePane);
+    app.on_gh_event(fetched("[]", "[]"));
+    assert!(app.needs_tick());
+}
+
+#[test]
+fn reload_keeps_gh_panel_and_pane() {
+    let mut app = app();
+    app.apply(Action::FetchGh);
+    app.on_gh_event(fetched("[]", "[]"));
+
+    app.replace_config(&config(&["build"]));
+
+    assert!(matches!(app.gh_panel(), GhPanel::Ready { .. }));
+    assert_eq!(app.pane(), RightPane::Status);
 }
