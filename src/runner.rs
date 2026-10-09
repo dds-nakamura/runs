@@ -152,6 +152,11 @@ impl Runner {
         self.live.clone()
     }
 
+    /// `gh` の取得の取り消しの旗（共有）。緊急終了のスレッドが `kill_all` の前に立て、残りのコマンドを起動させない
+    pub fn gh_cancel_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.gh_cancel)
+    }
+
     /// 起動する。失敗は `SpawnFailed` として通知する。実行中なら何もしない
     pub fn start(&mut self, run: RunId, spec: &CommandSpec) {
         self.reap();
@@ -255,6 +260,8 @@ impl Runner {
         };
         let busy = Arc::clone(&self.gh_busy);
         thread::spawn(move || {
+            // スレッドが途中で panic しても旗を下ろす（下ろさないと以後の g が全部「取得中」になる）
+            let _reset = ClearOnDrop(Arc::clone(&busy));
             let result = fetch_sequence(&program, &cwd, &gh);
             // 送る前に下ろす。受信側が Ready を見た時点で、次の g が新しい取得を起こせる
             busy.store(false, Ordering::Release);
@@ -527,6 +534,15 @@ struct GhHandles {
     current: Arc<Mutex<Option<u32>>>,
     /// 取り消しの旗。`current` と同じロックの下で立てる（起動の直後と行き違わない）
     cancel: Arc<AtomicBool>,
+}
+
+/// drop で旗を下ろす（取得スレッドの `gh_busy` 用）。
+struct ClearOnDrop(Arc<AtomicBool>);
+
+impl Drop for ClearOnDrop {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 /// `gh` を 2 回（PR の一覧、CI 実行の一覧）順に実行する。途中で取り消されたら残りは起動せず `None`

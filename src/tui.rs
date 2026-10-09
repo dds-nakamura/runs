@@ -91,7 +91,11 @@ pub fn run(app: &mut App, config: &Config) -> Result<()> {
     let (mut runner, rx) = Runner::new(config.shell.clone());
     // SIGTERM / SIGHUP（Unix）や Ctrl+Break（Windows）でも、下の経路で全停止と復元が走るようにする
     let cleaned_up = Arc::new(AtomicBool::new(false));
-    let terminated = install_termination_flag(runner.live_pids(), Arc::clone(&cleaned_up))?;
+    let terminated = install_termination_flag(
+        runner.live_pids(),
+        runner.gh_cancel_flag(),
+        Arc::clone(&cleaned_up),
+    )?;
     let mut guard = TerminalGuard::new()?;
     // gh の取得結果は子プロセスの通知とは別のチャネルで受ける（RunId に紐づかないため）
     let (gh_tx, gh_rx) = mpsc::channel::<GhEvent>();
@@ -129,6 +133,7 @@ pub fn run(app: &mut App, config: &Config) -> Result<()> {
 /// 端末が消えていれば復元の書き込みは失敗するだけで、生きていれば raw mode・alternate screen・カーソルが戻る）
 fn install_termination_flag(
     live: LivePids,
+    gh_cancel: Arc<AtomicBool>,
     cleaned_up: Arc<AtomicBool>,
 ) -> Result<Arc<AtomicBool>> {
     let flag = Arc::new(AtomicBool::new(false));
@@ -142,6 +147,8 @@ fn install_termination_flag(
             }
             std::thread::sleep(Duration::from_millis(100));
         }
+        // gh の取得は、動いているものを KILL するだけでは取得スレッドが次のコマンドを起こすので、先に取り消しの旗を立てる
+        gh_cancel.store(true, Ordering::Release);
         live.kill_all();
         // 主スレッドが止まっているので、こちらで復元を試す。失敗は捨てる（端末が無いときは書けない）。
         // 主スレッドが stdout のロックを持ったまま書き込みで止まっている場合もあるので、別スレッドで試し、
