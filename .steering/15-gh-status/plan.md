@@ -43,7 +43,7 @@ PR やマージ後の CI の結果を見るのに runs を離れて `gh` を叩�
   - getter: `pane()`, `gh_panel()`
   - テスト: `g` → `Effect::FetchGh` と `pane == Status`／取得中の `g` は空で notice／`Tab` の反転／`on_gh_event` で `Ready`（固定 JSON の Capture を組み立てる）／`needs_tick` が status 表示中だけ true／`r`（Reload）で `GhPanel` が消えない
 - `src/ui.rs`（変更）+ `src/ui/tests.rs`（変更・追加）
-  - `HELP` を `"Up/Dn select  Enter run  s stop  r reload  g gh  Tab pane  PgUp/Dn/End scroll  q quit"`（78 桁）に
+  - `HELP` を `"Up/Dn move  Enter run  s stop  r reload  g gh  Tab pane  PgUp/Dn scroll  q quit"`（79 桁。当初案は数え間違いで 85 桁あった）に
   - `draw_help`: `title_width + 2 + HELP の幅 <= area.width` のときだけタイトルを出す（足りなければ `Fill(1)` のみ）
   - `draw`: `app.pane()` で右側を `draw_header` / `draw_output`（Output）か `draw_status_header` / `draw_status`（Status）に振り分け
   - `draw_status_header`: `gh status  (press g to fetch)` / `gh status  fetching... Ns`（`format_elapsed`）/ `gh status  fetched Ns ago`（`format_ago`）
@@ -94,6 +94,15 @@ PR やマージ後の CI の結果を見るのに runs を離れて `gh` を叩�
 - `tests/cli.rs`: `help_exits_zero` が通り、`--help` の出力に `Keys:` と `g` / `Tab` が含まれる（`help_mentions_keys` を追加）
 - 実機確認（ユーザー、Windows Terminal。未検証なら明記）: 手順 7 の 4 項目。WSL で `cargo test` が通ること（`sh -c` の偽コマンド）
 - CI（PR の 4 ジョブ）が緑。macOS の `capture` テストも通ること
+
+## 実装中に分かったこと
+
+- `serde_json` 1.0.151 の追加で増えた crate は `serde_json` と `zmij` 1.0.23（MIT）の 2 つ。`cargo deny check` は ok（2026-10-09）
+- HELP の当初案「78 桁」は数え間違いで 85 桁あり、80 桁に収まらなかった。`Up/Dn move … PgUp/Dn scroll  q quit` の 79 桁に詰め、`End` は載せない（`--help` の Keys にはある）。タイトルが出るのは 91 桁から。spec の「画面・キーバインド」と C4 も直した
+- 既存の `output::sanitize` は制御文字を `?` に可視化する（除去ではない）。gh のタイトルの無害化もその規則に従う（テストの期待値を合わせた）
+- `tui::event_loop` の引数が 7 を超えるので、`runner` / 設定パス / root / `gh_tx` を `EffectContext` にまとめた（clippy の `too_many_arguments`）
+- status 区画の各行は `pr_line` / `run_line`（` #番号 ブランチ 結果 タイトル` / ` ブランチ 結果 経過 タイトル`）。ブランチの列幅は最長の名前（上限 20）。タイトルは残り幅で `truncate_to_width`
+- テスト件数: 単体 144 → 182（gh 20、runner 4、app 7、ui 7）、CLI 9 → 10（`help_mentions_keys`）
 
 ## 並行可能な作業
 
