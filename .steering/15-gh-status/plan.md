@@ -17,7 +17,7 @@ PR やマージ後の CI の結果を見るのに runs を離れて `gh` を叩�
     `RunSummary { branch: String, result: RunResult, age: Duration, title: String }`、`RunResult { Ok, Failed, Running, Other(String) }`、
     `GhError { NotFound, NotLoggedIn, NotARepository, TimedOut, Failed { code: Option<i32>, message: String }, BadJson }`（`Display` で spec A6 の英文）、
     `GhStatus { prs: Result<Vec<PrSummary>, GhError>, runs: Result<Vec<RunSummary>, GhError> }`
-  - 定数 `PR_ARGS` / `RUN_ARGS`（spec のとおり。`--limit 10`）、`LIMIT: usize = 10`
+  - 定数 `PR_ARGS` / `RUN_ARGS`（spec のとおり。`--limit 10`）、`LIMIT: &str = "10"`（引数に埋めるので文字列。実装時に変更）
   - `fn classify(capture: &runner::Capture) -> Result<&[u8], GhError>`（spawn_error NotFound → NotFound、timed_out → TimedOut、code 4 → NotLoggedIn、stderr に `not a git repository` → NotARepository、非ゼロ → Failed{code, stderr 1 行目を sanitize}、成功 → stdout）
   - `fn parse_prs(json: &[u8]) -> Result<Vec<PrSummary>, GhError>`（`serde_json::from_slice` → `#[derive(Deserialize)]` の生の構造体（`#[serde(default)]` で欠損に耐える）→ 要約。タイトル・ブランチは `output::sanitize` して 1 行目のみ）
   - `fn parse_runs(json: &[u8], now_unix: u64) -> Result<Vec<RunSummary>, GhError>`（`age = now_unix.saturating_sub(created)`。`createdAt` が読めなければ age 0）
@@ -27,7 +27,7 @@ PR やマージ後の CI の結果を見るのに runs を離れて `gh` を叩�
   - `pub struct Capture { pub status: Option<ExitStatus>, pub stdout: Vec<u8>, pub stderr: Vec<u8>, pub spawn_error: Option<io::ErrorKind>, pub timed_out: bool }`
   - `pub enum GhEvent { Fetched { pr: Capture, run: Capture, now_unix: u64 } }`
   - `pub const FETCH_TIMEOUT: Duration = 30s`
-  - `fn capture(program: &str, args: &[&str], cwd: &Path, timeout: Duration, live: &LivePids) -> Capture`: `Command::new(program).args(args).current_dir(cwd)`、stdin null、stdout/stderr piped、
+  - `fn capture(program: &str, args: &[&str], cwd: &Path, timeout: Duration, gh: &GhHandles) -> Capture`（`GhHandles { live, current: pid, cancel }`。実装時に `live` 単独から変更。起動前に `cwd.is_dir()` を確かめ、無ければ `spawn_error = NotADirectory`）: `Command::new(program).args(args).current_dir(cwd)`、stdin null、stdout/stderr piped、
     `env("NO_COLOR","1").env("GH_PAGER","").env("GH_PROMPT_DISABLED","1").env("GH_NO_UPDATE_NOTIFIER","1")`、Unix は `process_group(0)`。
     spawn 失敗は `spawn_error = Some(err.kind())`。stdout / stderr は各 1 スレッドで `read_to_end`。本体は `try_wait` を `POLL_INTERVAL` で回し、`timeout` を過ぎたら `force_kill(pid)` + `child.kill()` して `timed_out = true`。pid は `live` に insert / remove
   - `pub fn fetch_gh(&mut self, program: &str, cwd: &Path, tx: Sender<GhEvent>)`: 取得中（`gh_fetch: Option<JoinHandle<()>>` が未完了）なら何もしない。スレッドを起こし、`capture(PR_ARGS)` → `capture(RUN_ARGS)` の順に実行し、
@@ -47,7 +47,7 @@ PR やマージ後の CI の結果を見るのに runs を離れて `gh` を叩�
   - `draw_help`: `title_width + 2 + HELP の幅 <= area.width` のときだけタイトルを出す（足りなければ `Fill(1)` のみ）
   - `draw`: `app.pane()` で右側を `draw_header` / `draw_output`（Output）か `draw_status_header` / `draw_status`（Status）に振り分け
   - `draw_status_header`: `gh status  (press g to fetch)` / `gh status  fetching... Ns`（`format_elapsed`）/ `gh status  fetched Ns ago`（`format_ago`）
-  - `draw_status`: 行を組み立てて `Paragraph`。`Pull requests (open)` → 各 PR ` #N branch  ok     title~`（番号 5 桁右寄せ、ブランチは最大幅 20 に `truncate_to_width`、要約 6 桁、残りをタイトル）、`Recent CI runs` → ` branch  ok  3m ago  title~`。
+  - `draw_status`: 行を組み立てて `Paragraph`。`Pull requests (open)` → 各 PR ` #N branch  ok     title~`（番号は左寄せ 5 桁（`#` の直後に数字が来るよう右寄せにしない。実装時に変更）、ブランチは最大幅 20 に `truncate_to_width`、結果 9 桁（`cancelled` が収まる。当初 6 桁から reviewer 指摘で変更）、残りをタイトル）、`Recent CI runs` → ` branch  ok  3m ago  title~`。
     片方が `Err` なら見出しの下に ` error: <GhError の Display>`。0 件は ` (none)`。行数が `area.height` を超えたら最後の行を ` ... N more` に置き換える（`height == 0` なら何も描かない）
   - テスト: `help_row()` ヘルパーをタイトル表示の規則に合わせる（80 桁では HELP 78 + 2 > 70 なのでタイトル無し。既存 6 件はヘルパー経由なので追随。90 桁でタイトルが出るテストを 1 件足す）。
     status 区画のスナップショット（80x24）: 取得前（`Tab` 後の `press g to fetch`）、取得中（`fetching... 3s`）、PR 2 件 + runs 2 件、PR 側だけ `error: gh is not logged in (run: gh auth login)`、11 件で `... 1 more`、日本語タイトルの切り詰め。極小サイズ（`does_not_panic_at_tiny_sizes` に `pane = Status` の分岐を足す）
@@ -88,7 +88,8 @@ PR やマージ後の CI の結果を見るのに runs を離れて `gh` を叩�
 - `bash .claude/scripts/verify.sh --all` が `VERIFY OK`（`cargo deny check` で `serde_json` の追加分も ok）
 - 単体テスト（名前は実装時に確定。以下は予定）
   - `gh::tests`: `parses_open_prs_with_check_summary`, `status_context_and_check_run_mixed`, `in_progress_check_is_running`, `failed_check_wins_over_running`, `empty_list_is_ok`, `broken_json_is_bad_json`, `classify_exit_4_is_not_logged_in`, `classify_not_found_spawn_error`, `classify_not_a_git_repository`, `classify_timed_out`, `iso8601_to_unix_seconds`, `age_is_zero_when_created_in_future`, `titles_are_sanitized`
-  - `runner::tests`: `capture_collects_stdout_stderr_and_status`, `capture_reports_not_found`, `capture_times_out_and_kills`, `fetch_gh_sends_one_event_for_both_commands`, `fetch_gh_ignores_second_call_while_running`
+  - `runner::tests`: `capture_collects_stdout_stderr_and_status`, `capture_reports_not_found`, `capture_reports_missing_working_directory_before_spawning`, `capture_times_out_and_kills`, `cancel_gh_kills_running_capture`, `fetch_sequence_skips_remaining_commands_when_cancelled`, `fetch_gh_sends_one_event_for_both_commands`
+    （当初の `fetch_gh_ignores_second_call_while_running` は、`gh` の引数を受け付けて長く走る偽コマンドを 3 OS で用意できないので置かず、二重起動の防止は `App` 側（`g_while_fetching_sets_notice_without_effect`）と `is_fetching_gh` の旗で担保する）
   - `app::tests`: `g_starts_fetch_and_shows_status_pane`, `g_while_fetching_sets_notice`, `tab_toggles_pane`, `gh_event_makes_panel_ready`, `needs_tick_while_status_pane_is_shown`, `reload_keeps_gh_panel`
   - `ui::tests`: `status_pane_before_fetch`, `status_pane_while_fetching`, `status_pane_renders_prs_and_runs_at_80x24`, `status_pane_shows_error_for_failed_side`, `status_pane_truncates_with_more_line`, `help_hides_title_when_narrow`, `help_shows_title_when_wide`、`does_not_panic_at_tiny_sizes` の拡張
 - `tests/cli.rs`: `help_exits_zero` が通り、`--help` の出力に `Keys:` と `g` / `Tab` が含まれる（`help_mentions_keys` を追加）
@@ -103,6 +104,12 @@ PR やマージ後の CI の結果を見るのに runs を離れて `gh` を叩�
 - `tui::event_loop` の引数が 7 を超えるので、`runner` / 設定パス / root / `gh_tx` を `EffectContext` にまとめた（clippy の `too_many_arguments`）
 - status 区画の各行は `pr_line` / `run_line`（` #番号 ブランチ 結果 タイトル` / ` ブランチ 結果 経過 タイトル`）。ブランチの列幅は最長の名前（上限 20）。タイトルは残り幅で `truncate_to_width`
 - テスト件数: 単体 144 → 182（gh 20、runner 4、app 7、ui 7）、CLI 9 → 10（`help_mentions_keys`）
+- reviewer 1 回目（Important 2 / Minor 6 / Nit 5）への対応（2026-10-09）:
+  - Important 1: 終了時に `kill_gh` が 1 本目を止めても 2 本目の `gh run list` が起動して残る → 取り消しの旗 `gh_cancel` を足し、`cancel_gh` は pid と同じロックの下で旗を立てて KILL、`fetch_sequence` は各コマンドの前後で旗を見る。`capture` の起動と pid 登録も同じロックの下に。テスト `cancel_gh_kills_running_capture` / `fetch_sequence_skips_remaining_commands_when_cancelled`
+  - Important 2: 利用者の `CLICOLOR_FORCE` / `GH_FORCE_TTY` で JSON に色が付く → `env_remove`
+  - Minor: `try_wait` の `Err` でも KILL + `wait`／`is_fetching_gh` を JoinHandle ではなく「送信前に下ろす旗」に（Ready 直後の `g` が落ちない）／年を 1970〜9999 に絞り存在しない日付を弾く／作業ディレクトリが無いときの理由を分ける／spec・plan の型と runner の節を実装に合わせた
+  - Nit: 結果の列を 9 桁、番号を 5 桁、再取得中は前回の結果を残す（`GhPanel::Fetching { last }`）、CLI テストは Keys 節の行頭で判定、`NotLoggedIn` のコメント、`Cargo.toml` の版表記を `1` に
+  - テスト件数: 単体 189、CLI 10
 
 ## 並行可能な作業
 

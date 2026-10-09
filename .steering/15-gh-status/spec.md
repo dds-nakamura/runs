@@ -21,6 +21,7 @@
   - stderr に `not a git repository` を含む → `not a git repository`
   - 30 秒で終わらない → `gh timed out (30s)`（プロセスは KILL する）
   - それ以外の非ゼロ終了 → `gh failed (exit N): <stderr の 1 行目>`
+  - `runs.toml` のあるディレクトリが消えている → `gh failed: working directory does not exist`（実装時に追加）
   - JSON が読めない → `unexpected gh output`
   - 2 つのコマンド（PR / runs）の片方だけ失敗したときは、成功した側は表示し、失敗した側の見出しの下に理由を出す
 - [ ] A7. 起動時・再読み込み時には `gh` を呼ばない。`g` を押すまでネットワークに触れない
@@ -36,7 +37,8 @@
 - 端末の復元・panic の方針は既存どおり（新しいスレッドは panic させない。`gh` の読み取り失敗はイベントで返す）
 - 極小サイズ: status 区画は高さ 0 でも panic しない（既存の `does_not_panic_at_tiny_sizes` に status 区画のケースを足す）
 - 幅: 行の組み立ては表示幅（`unicode-width` 相当の既存ヘルパー）で切る。日本語タイトルで崩れない
-- 環境変数: `gh` には `NO_COLOR=1`、`GH_PAGER=`（空）、`GH_PROMPT_DISABLED=1`、`GH_NO_UPDATE_NOTIFIER=1` を付けて起動し、色・ページャー・対話・更新通知を抑える。stdin は null
+- 環境変数: `gh` には `NO_COLOR=1`、`GH_PAGER=`（空）、`GH_PROMPT_DISABLED=1`、`GH_NO_UPDATE_NOTIFIER=1` を付けて起動し、色・ページャー・対話・更新通知を抑える。
+  利用者の環境の `CLICOLOR_FORCE` / `GH_FORCE_TTY` は `NO_COLOR` より優先されて `--json` の出力に色が付く（JSON が読めなくなる）ので外す（reviewer 指摘、2026-10-09）。stdin は null
 
 ## 設計
 
@@ -61,10 +63,13 @@ pub struct GhStatus { pub prs: Result<Vec<PrSummary>, GhError>, pub runs: Result
 pub const PR_ARGS: &[&str]  = &["pr", "list", "--limit", "10", "--json", "number,title,headRefName,statusCheckRollup"];
 pub const RUN_ARGS: &[&str] = &["run", "list", "--limit", "10", "--json", "headBranch,status,conclusion,displayTitle,createdAt"];
 
-pub fn parse_prs(json: &str) -> Result<Vec<PrSummary>, GhError>;
-pub fn parse_runs(json: &str, now_unix: u64) -> Result<Vec<RunSummary>, GhError>;   // age = now - createdAt
-pub fn classify(outcome: &runner::Capture) -> Result<&str, GhError>;               // 終了コード・stderr から GhError を決め、成功なら stdout
-pub fn parse_iso8601_utc(s: &str) -> Option<u64>;                                   // "2026-10-08T07:13:56Z" → UNIX 秒。暦の換算は days-from-civil
+pub fn parse_prs(json: &[u8]) -> Result<Vec<PrSummary>, GhError>;
+pub fn parse_runs(json: &[u8], now_unix: u64) -> Result<Vec<RunSummary>, GhError>;  // age = now - createdAt（負なら 0）
+pub fn classify(capture: &runner::Capture) -> Result<&[u8], GhError>;              // 起動失敗・終了コード・stderr から GhError を決め、成功なら stdout
+pub fn status_from(pr: &Capture, run: &Capture, now_unix: u64) -> GhStatus;        // App が使う入口
+pub fn parse_iso8601_utc(s: &str) -> Option<u64>;                                   // "2026-10-08T07:13:56Z" → UNIX 秒。年は 1970〜9999、存在しない日付は None
+// 実装時の変更: 入出力は &str ではなく &[u8]（Capture の stdout をそのまま渡す）。LIMIT は引数に埋める &str
+// 作業ディレクトリが無いとき（spawn_error = NotADirectory）は `gh failed: working directory does not exist`（reviewer 指摘）
 ```
 
 - チェックの要約（`statusCheckRollup` の各要素）: `__typename == "CheckRun"` は `status` が `COMPLETED` なら `conclusion`（`SUCCESS` / `NEUTRAL` / `SKIPPED` → 成功扱い、それ以外 → 失敗）、未完了なら実行中。`__typename == "StatusContext"` は `state`（`SUCCESS` → 成功、`PENDING` / `EXPECTED` → 実行中、それ以外 → 失敗）。要素が 0 なら `None`。1 つでも失敗 → `Failed`、失敗が無く実行中あり → `Running`、全部成功 → `Ok`
@@ -83,8 +88,10 @@ impl Runner {
 }
 ```
 
-- `fetch_gh` の中身は汎用の `capture(program, args, cwd, timeout) -> Capture`（`try_wait` を 50 ms で回し、タイムアウトで `force_kill`。stdout / stderr は別スレッドで `read_to_end`）。テストは `capture` を `sh -c 'echo ...; exit N'` / `cmd /S /C "..."` で確認する
-- `Runner` が持つ gh の子は `running: HashMap<RunId, _>` には載せない（`RunId` はコマンド用）。`gh_child: Option<RunningGh>` を 1 つ持ち、`stop_all_and_wait` で一緒に止める
+- `fetch_gh` の中身は汎用の `capture(program, args, cwd, timeout, &GhHandles) -> Capture`（`try_wait` を 50 ms で回し、タイムアウトか `wait` の失敗で `force_kill` + `child.kill` + `wait`。stdout / stderr は別スレッドで `read_to_end`。起動前に `cwd.is_dir()` を確かめる）。テストは `capture` を `sh -c 'echo ...; exit N'` / `cmd /S /C "..."` で確認する
+- `Runner` が持つ gh の子は `running: HashMap<RunId, _>` には載せない（`RunId` はコマンド用）。取得スレッドと共有するのは `GhHandles { live, current: Arc<Mutex<Option<u32>>>（動いている gh の pid）, cancel: Arc<AtomicBool> }` と `gh_busy: Arc<AtomicBool>`（取得中。結果を送る直前に下ろす）。
+  終了時（`stop_all_and_wait` / `Drop`）は `cancel_gh`: `current` のロックの下で `cancel` を立て、pid があれば `force_kill`。取得スレッドは各コマンドの前後で `cancel` を見て、立っていれば残りを起動せず結果も送らない（`fetch_sequence`）。`capture` の起動と pid の登録も同じロックの下で行い、取り消しと行き違わない
+  （当初案の「`gh_child` を 1 つ持つ」では 2 本目のコマンドが終了後に起動して残る、と reviewer に指摘されて変更。2026-10-09）
 
 ```rust
 // src/app.rs に追加

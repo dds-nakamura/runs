@@ -47,7 +47,8 @@ clippy 警告を `#[allow(...)]` で黙らせる場合は理由コメント必�
   - `src/cli.rs`: 引数の解釈（手書き。`Command`）、バージョンと使い方の文字列
   - `src/config.rs`: `runs.toml` の探索（カレントから親へ）・読み込み・検証（`Config` / `CommandSpec`）。無い・壊れていれば TUI を起動せず終了コード 1
   - `src/app.rs`: 状態 `App`（コマンドごとの状態・出力・選択・スクロール・開始 / 終了時刻）、`Action`、キーバインド（`action_for`）、
-    更新（`App::apply` / `on_runner_event` → `Vec<Effect>`、`replace_config`）。プロセスにもファイルにも触らず、`Effect::Start / Stop / Reload` で `tui` に頼む。
+    更新（`App::apply` / `on_runner_event` → `Vec<Effect>`、`on_gh_event`、`replace_config`）。プロセスにもファイルにも触らず、`Effect::Start / Stop / Reload / FetchGh` で `tui` に頼む。
+    右側の区画（`RightPane`）と `gh` の取得状態（`GhPanel`: 未取得 / 取得中（前回の結果を保持）/ 結果あり）も持つ。
     現在時刻は `set_now` で外から受け取る（中で `Instant::now()` を呼ばない。テストで時間を進めるため）
   - `src/output.rs`: 出力行の保持（上限 10,000 行）、文字コード（`decode`: UTF-8 で読めない行だけ設定の `encoding` で読み直す。Windows の既定は Shift_JIS）、無害化（`sanitize`: ESC シーケンス・制御文字の除去）
   - `src/gh.rs`: `gh pr list` / `gh run list` の `--json` の解釈（`parse_prs` / `parse_runs`）、失敗の分類（`classify`: 未導入・未ログイン（終了コード 4）・非リポジトリ・タイムアウト）、
@@ -58,7 +59,8 @@ clippy 警告を `#[allow(...)]` で黙らせる場合は理由コメント必�
   - `src/timefmt.rs`: 経過時間の短い表記（`12s` / `1m 12s` / `3m ago`。幅 7）
   - `src/ui.rs`: 描画（`draw(frame, app)`）と区画（`layout(area, app)`。`tui` が出力欄の高さを `App` に渡すのにも使う）。`TestBackend` に描ける
   - `src/tui.rs`: 端末ガード（`TerminalGuard`）とイベントループ（`run`: `event::poll(50 ms)` + チャネルの `try_recv`。時間の表示があるときは 1 秒ごとに描き直す）。
-    `Effect` の実行（プロセスは `runner`、`runs.toml` の再読み込みは `config::load_file`）。
+    `Effect` の実行（プロセスは `runner`、`runs.toml` の再読み込みは `config::load_file`、`gh` は `runner.fetch_gh` に設定ファイルのディレクトリを渡す。まとめて `EffectContext`）。
+    `gh` の結果は別チャネル（`GhEvent`）で受け、`App::on_gh_event` に渡す。
     SIGTERM / SIGHUP（Unix）と Ctrl+Break（Windows）は `ctrlc` のハンドラがフラグを立て、主スレッドが全停止と復元をしてから終了コード 1 で終わる。
     端末が本当に閉じたとき（pty が消える）は crossterm の読み取りが戻らないので、ハンドラのスレッドが 10 秒後に子プロセスを KILL し、復元を試してから `process::exit(1)` する
     （`Terminal` の drop を通らない唯一の経路。`rust-safety` 2 章の例外）
@@ -96,7 +98,7 @@ clippy 警告を `#[allow(...)]` で黙らせる場合は理由コメント必�
 - `cmd` に渡す文字列を std の `arg` で渡す（MSVC 流の `\"` エスケープを `cmd` は解釈しない）。`raw_arg` で全体を `"` に包み、`/S /C` と組み合わせる（`runner::push_command_arg`）
 - TUI 実行中に `println!` / `dbg!` で stdout に出して画面を崩す
 - `Cargo.lock` を手で編集する／`cargo update` で無関係な依存まで上げる
-- 実装中に計画が変わったとき、plan.md に差分を追記するだけで、古くなった節（証明のテスト名・リスク・spec の設計）を直さない。
+- 実装中に計画が変わったとき、plan.md に差分を追記するだけで、古くなった節（証明のテスト名・リスク・spec の設計・型とシグネチャ）を直さない。
   レビュー対応で設定値を変えたら、その値（旧値）を spec / plan に `grep` して古い記述が残っていないか確かめる
 
 ## 未確定事項（決まったら更新する）
