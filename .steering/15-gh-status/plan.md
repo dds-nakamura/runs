@@ -30,14 +30,15 @@ PR やマージ後の CI の結果を見るのに runs を離れて `gh` を叩�
   - `fn capture(program: &str, args: &[&str], cwd: &Path, timeout: Duration, gh: &GhHandles) -> Capture`（`GhHandles { live, current: pid, cancel }`。実装時に `live` 単独から変更。起動前に `cwd.is_dir()` を確かめ、無ければ `spawn_error = NotADirectory`）: `Command::new(program).args(args).current_dir(cwd)`、stdin null、stdout/stderr piped、
     `env("NO_COLOR","1").env("GH_PAGER","").env("GH_PROMPT_DISABLED","1").env("GH_NO_UPDATE_NOTIFIER","1")`、Unix は `process_group(0)`。
     spawn 失敗は `spawn_error = Some(err.kind())`。stdout / stderr は各 1 スレッドで `read_to_end`。本体は `try_wait` を `POLL_INTERVAL` で回し、`timeout` を過ぎたら `force_kill(pid)` + `child.kill()` して `timed_out = true`。pid は `live` に insert / remove
-  - `pub fn fetch_gh(&mut self, program: &str, cwd: &Path, tx: Sender<GhEvent>)`: 取得中（`gh_fetch: Option<JoinHandle<()>>` が未完了）なら何もしない。スレッドを起こし、`capture(PR_ARGS)` → `capture(RUN_ARGS)` の順に実行し、
+  - `pub fn fetch_gh(&mut self, program: &str, cwd: &Path, tx: Sender<GhEvent>)`: 取得中（`gh_busy` の旗。取得スレッドが結果を送る直前に下ろす。スレッドが panic しても `ClearOnDrop` で下りる。当初案の `JoinHandle::is_finished` から変更）なら何もしない。スレッドを起こし、`capture(PR_ARGS)` → `capture(RUN_ARGS)` の順に実行し、
     `now_unix = SystemTime::now().duration_since(UNIX_EPOCH)` を付けて `GhEvent::Fetched` を送る（`SystemTime` は runner 側で取る。App は受け取るだけ）
-  - 終了時: `stop_all_and_wait` の冒頭で、gh の pid（`gh_pid: Arc<Mutex<Option<u32>>>` をスレッドと共有）があれば `force_kill` する。`Drop` も同様。`LivePids` に入れているので緊急 KILL の対象にもなる
+  - 終了時: `stop_all_and_wait` と `Drop` が `kill_gh` → `cancel_gh(current, cancel)`: pid のロックの下で取り消しの旗 `gh_cancel` を立て、動いている gh があれば `force_kill`。取得スレッドは `fetch_sequence` で各コマンドの前後に旗を見て、立っていれば残りを起動せず結果も送らない。
+    緊急終了（`tui::install_termination_flag` のスレッド）も `kill_all` の前に同じ旗を立てる（`Runner::gh_cancel_flag`）。`LivePids` に入れているので KILL の対象にもなる（当初案の「pid があれば force_kill」だけでは 2 本目が起動して残る、と reviewer に指摘されて変更）
   - テスト（`sh -c` / `cmd /S /C` で偽コマンド。`config::default_shell()` を流用）: 標準出力を全部返す／終了コードが取れる／stderr が取れる／存在しないプログラムは `spawn_error = NotFound`／`sleep 30` 相当を 1 秒の timeout で `timed_out = true` かつプロセスが残らない／`fetch_gh` を `program = "nonexistent-gh"` で呼ぶと `GhEvent::Fetched` が届き両方 `spawn_error` が NotFound
 - `src/app.rs`（変更）+ `src/app/tests.rs`（追加）
-  - `Action::{FetchGh, TogglePane}`、`Effect::FetchGh`、`pub enum RightPane { Output, Status }`、`pub enum GhPanel { NotFetched, Fetching { since: Instant }, Ready { status: gh::GhStatus, at: Instant } }`
+  - `Action::{FetchGh, TogglePane}`、`Effect::FetchGh`、`pub enum RightPane { Output, Status }`、`pub enum GhPanel { NotFetched, Fetching { since: Instant, last: Option<GhStatus> }, Ready { status: gh::GhStatus, at: Instant } }`（`last` は再取得中に見せる前回の結果。reviewer の提案で追加）
   - `App` に `pane: RightPane`、`gh: GhPanel`。`action_for`: `Char('g') => FetchGh`、`Tab => TogglePane`
-  - `apply(FetchGh)`: `Fetching` 中なら `set_notice("already fetching")`（`apply` 冒頭の `notice = None` の後に設定）で `[]`。それ以外は `gh = Fetching { since: now }`、`pane = Status`、`[Effect::FetchGh]`。`apply(TogglePane)`: `pane` を反転、`[]`
+  - `apply(FetchGh)`: `Fetching` 中なら `set_notice("already fetching")`（`apply` 冒頭の `notice = None` の後に設定）で `[]`。それ以外は `gh = Fetching { since: now, last: 直前が Ready ならその結果 }`、`pane = Status`、`[Effect::FetchGh]`。`apply(TogglePane)`: `pane` を反転、`[]`
   - `pub fn on_gh_event(&mut self, event: GhEvent)`: `classify` → `parse_*` で `GhStatus` を作り `Ready { status, at: now }`
   - `needs_tick()`: 既存の条件に `|| (pane == Status && !matches!(gh, NotFetched))` を足す
   - getter: `pane()`, `gh_panel()`

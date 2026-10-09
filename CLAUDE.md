@@ -62,7 +62,7 @@ clippy 警告を `#[allow(...)]` で黙らせる場合は理由コメント必�
     `Effect` の実行（プロセスは `runner`、`runs.toml` の再読み込みは `config::load_file`、`gh` は `runner.fetch_gh` に設定ファイルのディレクトリを渡す。まとめて `EffectContext`）。
     `gh` の結果は別チャネル（`GhEvent`）で受け、`App::on_gh_event` に渡す。
     SIGTERM / SIGHUP（Unix）と Ctrl+Break（Windows）は `ctrlc` のハンドラがフラグを立て、主スレッドが全停止と復元をしてから終了コード 1 で終わる。
-    端末が本当に閉じたとき（pty が消える）は crossterm の読み取りが戻らないので、ハンドラのスレッドが 10 秒後に子プロセスを KILL し、復元を試してから `process::exit(1)` する
+    端末が本当に閉じたとき（pty が消える）は crossterm の読み取りが戻らないので、ハンドラのスレッドが 10 秒後に `gh` の取得を取り消して子プロセスを KILL し、復元を試してから `process::exit(1)` する
     （`Terminal` の drop を通らない唯一の経路。`rust-safety` 2 章の例外）
     （Windows でタブを閉じる操作は間に合わない。既知の制限）
 - 設定ファイルは `runs.toml`（`[[command]]` の `name` / `command` / `cwd`、トップレベルの `shell` / `encoding`）。書き方は `runs --help`。リポジトリ直下のものは `runs` 自身の開発用
@@ -99,7 +99,7 @@ clippy 警告を `#[allow(...)]` で黙らせる場合は理由コメント必�
 - TUI 実行中に `println!` / `dbg!` で stdout に出して画面を崩す
 - `Cargo.lock` を手で編集する／`cargo update` で無関係な依存まで上げる
 - 実装中に計画が変わったとき、plan.md に差分を追記するだけで、古くなった節（証明のテスト名・リスク・spec の設計・型とシグネチャ）を直さない。
-  レビュー対応で設定値を変えたら、その値（旧値）を spec / plan に `grep` して古い記述が残っていないか確かめる
+  レビュー対応で設定値や型を変えたら、旧値・旧い型名・フィールド名（例: `Fetching { since: Instant }`、`JoinHandle`）を spec / plan に `grep` して古い記述が残っていないか確かめる
 
 ## 未確定事項（決まったら更新する）
 

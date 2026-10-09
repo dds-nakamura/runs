@@ -98,7 +98,8 @@ impl Runner {
 pub enum Action { …, FetchGh, TogglePane }
 pub enum Effect { …, FetchGh }                 // cwd は tui が config.root を渡す。App は root を持たない
 pub enum RightPane { Output, Status }
-pub enum GhPanel { NotFetched, Fetching { since: Instant }, Ready { status: GhStatus, at: Instant }, }
+pub enum GhPanel { NotFetched, Fetching { since: Instant, last: Option<GhStatus> }, Ready { status: GhStatus, at: Instant }, }
+// `last` は再取得中に見せる前回の結果（reviewer の提案で追加。`GhPanel::status()` が Ready の結果か last を返す）
 // App のフィールド: pane: RightPane, gh: GhPanel
 impl App {
     pub fn on_gh_event(&mut self, event: GhEvent);   // Capture → gh::classify / parse_* → GhPanel::Ready
@@ -153,7 +154,7 @@ Recent CI runs
 | CLAUDE.md Architecture「プロセスに触るのは runner だけ」「App は Instant::now() を呼ばない」 | 起動は `Runner::fetch_gh`。`App` は `GhEvent` の `now_unix` と `set_now` の `Instant` だけを使う |
 | CLAUDE.md「状態・更新・描画を分け、端末なしでテスト」 | `gh` モジュールは純粋関数。`App` のテストで `Action → Effect` と `GhEvent → GhPanel` を確認。描画は `TestBackend` |
 | rust-safety 1 章（unwrap / panic 禁止） | JSON の欠損は `Option` / `serde(default)` で受ける。スレッド内でも `?` と `GhError` で返す |
-| rust-safety 2 章（端末復元） | 新しい経路で `process::exit` は使わない。`gh` の子は `LivePids` に入れ、緊急終了の KILL 対象にする |
+| rust-safety 2 章（端末復元） | 新しい経路で `process::exit` は使わない。`gh` の子は `LivePids` に入れ、緊急終了の KILL 対象にする。緊急終了のスレッドは `kill_all` の前に取り消しの旗（`Runner::gh_cancel_flag`）を立て、取得スレッドが次のコマンドを起こさないようにする（reviewer 2 回目の指摘） |
 | rust-safety 3 章（外部入力の表示） | タイトル・ブランチ・stderr は `sanitize`。改行は 1 行目のみ採用 |
 | rust-safety 4 章（文字列と座標） | 幅は表示幅で計算し、既存の切り詰め関数を使う。`u16` の減算は `saturating_sub` |
 | rust-safety 6 章（外部コマンド） | `Command::new("gh").args(PR_ARGS)`。シェル文字列に連結しない。`cwd` は `PathBuf` |
@@ -199,5 +200,5 @@ CI 実行の `createdAt` は UTC の壁時計なので、`Instant` では差が�
 - 表示場所 → **回答（案）**: C1 の (C)
 - 取得に使うキー → **回答**: `g`（取得して status へ）と `Tab`（切り替え）
 - 件数上限 → **回答**: 各 10 件、スクロール無し（C2）
-- `gh` を runner にどう載せるか → **回答**: `Runner::fetch_gh` + 汎用の `capture`。`RunId` には載せず `gh_child` を 1 つ持つ。通知は別チャネルの `GhEvent`
+- `gh` を runner にどう載せるか → **回答**: `Runner::fetch_gh` + 汎用の `capture`。`RunId` には載せず、取得スレッドと共有する `GhHandles`（pid・取り消しの旗）と `gh_busy` で管理する（「設計」の runner の節）。通知は別チャネルの `GhEvent`
 - `gh` 不在の CI でテストを通す分け方 → **回答**: 解釈・分類・暦換算は `gh` モジュールの純粋関数を固定 JSON で、起動は `capture` を `sh` / `cmd` の偽コマンドで、`App` は `GhEvent` を直接渡して
